@@ -1,6 +1,7 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use std::thread;
+use colored::*;
 
 pub fn execute(target: &str) {
     let common_ports = [
@@ -16,22 +17,19 @@ pub fn execute(target: &str) {
         (3389, "RDP"),
     ];
 
-    println!("========================================");
-    println!(" Scouter26 - Port Scanner");
-    println!(" Target: {}", target);
-    println!("========================================");
+    // Color the header cyan!
+    println!("{}", "========================================".cyan());
+    println!("{}", " Scouter26 - Port Scanner".cyan());
+    println!(" {}{}", "Target: ".cyan(), target.cyan());
+    println!("{}", "========================================".cyan());
 
-    // We will store our threads here
     let mut threads = Vec::new();
 
-    // 1. Spawn a thread for EVERY port
     for (port, service) in common_ports.iter() {
-        // We need to clone these because threads take ownership of variables
         let target = String::from(target);
         let port = *port;
         let service = *service;
 
-        // Spawn a new OS thread
         let handle = thread::spawn(move || {
             let address = format!("{}:{}", target, port);
             
@@ -48,36 +46,33 @@ pub fn execute(target: &str) {
                 Duration::from_secs(1)
             );
 
-            // Return a tuple: (port, service, is_it_open?)
             (port, service, connection.is_ok())
         });
 
         threads.push(handle);
     }
 
-    // 2. Collect the results
     let mut open_ports = Vec::new();
 
     for handle in threads {
-        // .join() waits for the thread to finish
         let result = handle.join().unwrap();
-        if result.2 { // If is_it_open == true
+        if result.2 {
             open_ports.push(result);
         }
     }
 
-    // 3. Sort the results by port number so they print in order
     open_ports.sort_by_key(|(port, _, _)| *port);
 
-    // 4. Print them
     if open_ports.is_empty() {
-        println!(" No open ports found.");
+        // Make the "no ports" message yellow
+        println!("{}", " No open ports found.".yellow());
     } else {
         for (port, service, _) in open_ports {
-            println!(" Port {:<5} ({:<5}) : OPEN", port, service);
+            // Make the OPEN message bright green
+            println!(" Port {:<5} ({:<5}) : {}", port, service, "OPEN".green().bold());
         }
     }
 
-    println!("========================================");
-    println!(" Scan complete.");
+    println!("{}", "========================================".cyan());
+    println!("{}", " Scan complete.".cyan());
 }
