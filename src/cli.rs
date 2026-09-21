@@ -17,4 +17,9 @@ pub enum Commands {
         /// The IP address in CIDR notation (e.g., 192.168.1.10/24)
         cidr: String,
     },
+    /// Look up common network ports and protocols
+    Ports {
+        /// The port number (e.g., 80) or protocol name (e.g., http)
+        query: String,
+    },
 }
