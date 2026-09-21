@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-/// Scouter26: A modular network toolbox for A+ and Network+ prep
+/// Scouter26: A modular network toolbox for IT Support and Admins
 #[derive(Parser)]
 #[command(name = "scouter26")]
 #[command(version = "1.0")]
@@ -21,5 +21,10 @@ pub enum Commands {
     Ports {
         /// The port number (e.g., 80) or protocol name (e.g., http)
         query: String,
+    },
+    /// Scan common ports on a target host to see if they are open
+    Scan {
+        /// The IP address or hostname to scan (e.g., 192.168.1.1)
+        target: String,
     },
 }
