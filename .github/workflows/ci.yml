@@ -1,0 +1,27 @@
+# Continuous Integration: run the test suite on every push and pull request.
+# GitHub spins up a fresh Linux VM for free (public repos), copies your code
+# onto it, and proves the tests pass on a clean machine — not just yours.
+name: CI
+
+# When to run:
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest   # a clean Ubuntu machine, fresh every run
+    steps:
+      # Step 1: copy the repository code onto that machine
+      - uses: actions/checkout@v4
+
+      # Step 2: install a stable Rust toolchain
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Step 3: save compiled dependencies after this run, so future runs
+      # take ~1 minute instead of ~5 (it's a cache, like Cargo's but remote)
+      - uses: Swatinem/rust-cache@v2
+
+      # Step 4: the actual test — all 19 must pass or the run goes red
+      - run: cargo test --verbose
