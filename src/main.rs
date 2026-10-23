@@ -14,8 +14,8 @@ fn main() {
         Commands::Ports { query } => {
             commands::ports::execute(query);
         }
-        Commands::Scan { target } => {
-            commands::scan::execute(target);
+        Commands::Scan { target, ports } => {
+            commands::scan::execute(target, ports);
         }
     }
 }

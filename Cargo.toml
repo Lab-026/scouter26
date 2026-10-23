@@ -1,9 +1,18 @@
 [package]
 name = "scouter26"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 ipnet = "2.9"
 colored = "2.1"
+
+# Makes the release binary smaller and faster:
+#   lto           = optimize across the whole program, not file by file
+#   codegen-units = 1 = one compilation unit (slower build, better optimization)
+#   strip         = remove debug symbols from the final binary
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
