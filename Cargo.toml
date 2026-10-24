@@ -1,7 +1,10 @@
 [package]
 name = "scouter26"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
+description = "A modular network toolbox: subnet math, port lookup, parallel TCP scan"
+license = "MIT"
+repository = "https://github.com/Lab-026/scouter26"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

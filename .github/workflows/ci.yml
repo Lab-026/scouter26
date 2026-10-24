@@ -23,5 +23,5 @@ jobs:
       # take ~1 minute instead of ~5 (it's a cache, like Cargo's but remote)
       - uses: Swatinem/rust-cache@v2
 
-      # Step 4: the actual test — all 19 must pass or the run goes red
+      # Step 4: the actual test — all tests must pass or the run goes red
       - run: cargo test --verbose

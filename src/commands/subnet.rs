@@ -85,26 +85,17 @@ pub fn host_range(net: Ipv4Net) -> String {
 // The command
 // ============================================================
 
-pub fn execute(cidr: &str) {
+pub fn execute(cidr: &str) -> Result<(), String> {
     // Parse strictly as IPv4 CIDR. IPv6 fails here and gets a clear
     // error message instead of a crash.
     let net = match Ipv4Net::from_str(cidr) {
         Ok(net) => net,
         Err(error) => {
-            if cidr.contains(':') {
-                eprintln!(
-                    "{}",
-                    "Error: IPv6 is not supported yet. Use an IPv4 address like 192.168.1.55/24"
-                        .red()
-                        .bold()
-                );
+            return if cidr.contains(':') {
+                Err("IPv6 is not supported yet. Use an IPv4 address like 192.168.1.55/24".to_string())
             } else {
-                eprintln!("{}", format!("Error: invalid IPv4 CIDR '{}'", cidr).red().bold());
-                eprintln!("{}", format!("Details: {}", error).red());
-            }
-            // Exit with code 1 so shell scripts can detect the failure
-            // (e.g. `scouter26 subnet $ip || echo "failed"`)
-            std::process::exit(1);
+                Err(format!("invalid IPv4 CIDR '{}'\nDetails: {}", cidr, error))
+            };
         }
     };
 
@@ -126,6 +117,7 @@ pub fn execute(cidr: &str) {
     println!(" {:<14}: {}", "Class", address_class(addr.octets()[0]));
     println!(" {:<14}: {}", "Type", address_type(addr));
     println!("{}", "========================================".cyan());
+    Ok(())
 }
 
 // ============================================================

@@ -32,5 +32,11 @@ pub enum Commands {
         /// Default: the 10 most common ports.
         #[arg(short, long)]
         ports: Option<String>,
+        /// Seconds to wait for each port before calling it closed
+        #[arg(long, default_value_t = 1.0)]
+        timeout: f64,
+        /// How many ports to probe at the same time (1-2000)
+        #[arg(long, default_value_t = 200)]
+        workers: usize,
     },
 }

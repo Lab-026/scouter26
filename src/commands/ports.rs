@@ -58,16 +58,16 @@ const TABLE: &[PortEntry] = &[
 /// Entry point for `scouter26 ports <query>`.
 ///
 /// Accepts a port number ("443") or a service name ("ssh").
-/// Exit code is 0 when an exact answer was found, 1 otherwise —
-/// so shell scripts can check success the standard Unix way ($?).
-pub fn execute(query: &str) {
+/// Returns Err for anything that is not an exact answer, which `main`
+/// turns into exit code 1 — so shell scripts can check success the
+/// standard Unix way ($?).
+pub fn execute(query: &str) -> Result<(), String> {
     // Normalise: trim spaces and lowercase, so "SSH", "ssh " and "Ssh"
     // all behave identically.
     let query = query.trim().to_lowercase();
 
     if query.is_empty() {
-        eprintln!("{} no query given. Try: scouter26 ports 443", "error:".red().bold());
-        std::process::exit(1);
+        return Err("no query given. Try: scouter26 ports 443".to_string());
     }
 
     // Path 1 — the query is a number: look the port up directly.
@@ -78,27 +78,23 @@ pub fn execute(query: &str) {
             .collect();
 
         if hits.is_empty() {
-            eprintln!(
-                "{} port {} is valid, but is not in scouter26's table of common ports.",
-                "error:".red().bold(),
+            return Err(format!(
+                "port {} is valid, but is not in scouter26's table of common ports.",
                 number
-            );
-            std::process::exit(1);
+            ));
         }
 
         print_table(&hits);
-        return;
+        return Ok(());
     }
 
     // If it was all digits but did not parse, it is out of range.
     // (Ports are 16-bit numbers: 0 to 65535 — a favourite Network+ fact.)
     if query.chars().all(|c| c.is_ascii_digit()) {
-        eprintln!(
-            "{} '{}' is not a valid port number — ports run from 0 to 65535.",
-            "error:".red().bold(),
+        return Err(format!(
+            "'{}' is not a valid port number — ports run from 0 to 65535.",
             query
-        );
-        std::process::exit(1);
+        ));
     }
 
     // Path 2 — the query is a name: exact match first.
@@ -109,7 +105,7 @@ pub fn execute(query: &str) {
 
     if !hits.is_empty() {
         print_table(&hits);
-        return;
+        return Ok(());
     }
 
     // Path 3 — wildcard fallback: nothing exact, so suggest anything
@@ -120,17 +116,15 @@ pub fn execute(query: &str) {
         .collect();
 
     if suggestions.is_empty() {
-        eprintln!(
-            "{} no entry matches '{}'. Try a number (e.g. 443) or a name (e.g. ssh).",
-            "error:".red().bold(),
+        return Err(format!(
+            "no entry matches '{}'. Try a number (e.g. 443) or a name (e.g. ssh).",
             query
-        );
-        std::process::exit(1);
+        ));
     }
 
     println!("No exact match for '{}' — did you mean:", query);
     print_table(&suggestions);
-    std::process::exit(1);
+    Err(format!("no exact match for '{}'", query))
 }
 
 /// Look up the well-known service name for a port number.
