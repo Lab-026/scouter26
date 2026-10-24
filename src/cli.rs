@@ -43,4 +43,19 @@ pub enum Commands {
         #[arg(long)]
         ipv6: bool,
     },
+    /// Find live hosts in a subnet by probing common ports on every address
+    Discover {
+        /// The network to sweep, in CIDR notation (e.g., 192.168.1.0/24)
+        cidr: String,
+        /// Ports to probe on each host: one, a list, or a range.
+        /// Default: 22, 80, 443, 445, 3389.
+        #[arg(short, long)]
+        ports: Option<String>,
+        /// Seconds to wait for each probe before calling the host absent
+        #[arg(long, default_value_t = 1.0)]
+        timeout: f64,
+        /// How many probes to send at the same time (1-2000)
+        #[arg(long, default_value_t = 200)]
+        workers: usize,
+    },
 }

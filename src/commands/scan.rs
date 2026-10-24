@@ -9,14 +9,11 @@ use std::time::Duration;
 use colored::*;
 
 use super::ports;
+use super::{parse_ports, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD};
 
 /// One scan result: a port number plus whatever banner the service
 /// announced (None when it stayed quiet).
 type ScanResult = (u16, Option<String>);
-
-/// The hard ceiling for --workers. Beyond a few thousand, the threads cost
-/// more than they save and local file-descriptor limits start to bite.
-const MAX_WORKERS: usize = 2000;
 
 /// How long to wait for a banner after connecting, and how much of it to keep.
 /// Short on purpose: this is a bonus, not a reason to slow the scan down.
@@ -26,59 +23,6 @@ const BANNER_MAX_CHARS: usize = 80;
 
 /// The ports scanned when the user does not pick their own.
 const DEFAULT_PORTS: [u16; 10] = [22, 23, 25, 53, 80, 110, 143, 443, 445, 3389];
-
-/// Live progress is only worth its screen noise on long scans.
-const PROGRESS_THRESHOLD: usize = 100;
-
-/// Parse a port specification: "80", "22,80,443", or "1-1024".
-/// Returns a sorted list with no duplicates.
-fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
-    let mut ports = Vec::new();
-
-    for part in spec.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        if let Some((start_str, end_str)) = part.split_once('-') {
-            let start: u16 = start_str
-                .trim()
-                .parse()
-                .map_err(|_| format!("'{}' is not a valid port", start_str.trim()))?;
-            let end: u16 = end_str
-                .trim()
-                .parse()
-                .map_err(|_| format!("'{}' is not a valid port", end_str.trim()))?;
-            if start == 0 || end == 0 {
-                return Err("Port 0 is reserved and cannot be scanned".to_string());
-            }
-            if start > end {
-                return Err(format!(
-                    "Range {}-{} is backwards. Did you mean {}-{}?",
-                    start, end, end, start
-                ));
-            }
-            ports.extend(start..=end);
-        } else {
-            let port: u16 = part
-                .parse()
-                .map_err(|_| format!("'{}' is not a valid port", part))?;
-            if port == 0 {
-                return Err("Port 0 is reserved and cannot be scanned".to_string());
-            }
-            ports.push(port);
-        }
-    }
-
-    if ports.is_empty() {
-        return Err("No valid ports were given".to_string());
-    }
-
-    ports.sort_unstable();
-    ports.dedup();
-    Ok(ports)
-}
 
 /// Turn a hostname or IP string into one IP address (either family).
 ///
@@ -140,13 +84,6 @@ fn sanitize_banner(bytes: &[u8]) -> String {
         .chars()
         .take(BANNER_MAX_CHARS)
         .collect()
-}
-
-/// A lock() only fails when a thread panicked while holding it
-/// ("poisoned"). The data itself is still fine, so recover it instead of
-/// silently dropping results. Generic so every mutex in this file can use it.
-fn unlock<T>(poisoned: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> std::sync::MutexGuard<'_, T> {
-    poisoned.into_inner()
 }
 
 /// Probe the given ports on one IP address (IPv4 or IPv6) and return
@@ -245,12 +182,7 @@ pub fn execute(
     let started_at = std::time::Instant::now();
 
     // 1. Validate the tunables before anything touches the network.
-    if !(0.05..=60.0).contains(&timeout_secs) {
-        return Err("timeout must be between 0.05 and 60 seconds".to_string());
-    }
-    if workers == 0 || workers > MAX_WORKERS {
-        return Err(format!("workers must be between 1 and {}", MAX_WORKERS));
-    }
+    validate_tunables(timeout_secs, workers)?;
 
     // 2. Decide which ports to scan.
     let ports: Vec<u16> = match ports_arg {

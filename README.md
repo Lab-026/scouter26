@@ -14,6 +14,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 subnet <cidr>`    | Full IPv4 **and IPv6** subnet breakdown  |
 | `scouter26 ports <query>`    | Port lookup by number or service name    |
 | `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4 & IPv6)  |
+| `scouter26 discover <cidr>`  | Find live hosts in a subnet              |
 
 ## subnet
 
@@ -97,6 +98,39 @@ bare IPv6 address (or an IPv6-only hostname) scans over IPv6 directly.
 
 > **Warning:** Only scan systems you own or have written permission to scan.
 > Unauthorized port scanning is illegal in many jurisdictions.
+
+## discover
+
+Sweep a subnet for live machines by probing a handful of classic ports on
+every address. A host counts as **ALIVE** if any probe connects — or is
+*refused*, because a refusal is still a machine answering. This is how
+discovery finds hosts that ignore ICMP ping.
+
+```text
+$ scouter26 discover 192.168.1.0/24
+
+========================================
+ Scouter26 - Host Discovery
+========================================
+ Network:      192.168.1.0/24
+ Hosts:        254
+ Probe ports:  22 (ssh), 80 (http), 443 (https), 445 (smb), 3389 (rdp)
+ Total probes: 1270
+----------------------------------------
+ [!] Only scan networks you own or have permission to scan.
+========================================
+ 192.168.1.1                          ALIVE  80 (http), 443 (https)
+ 192.168.1.34                         ALIVE  (answered, but no open ports)
+========================================
+ Found 2 live host(s) out of 254 probed in 6.41s.
+```
+
+- `--ports`, `--timeout`, `--workers` work exactly as in `scan`
+- Sweeps are capped at 4096 hosts — use a longer prefix for anything wider
+- A host that silently drops every probe cannot be seen by TCP discovery
+  (ICMP and ARP discovery are planned)
+
+> **Warning:** Only scan networks you own or have permission to scan.
 
 ## Installation
 

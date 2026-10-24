@@ -21,6 +21,12 @@ fn main() {
             workers,
             ipv6,
         } => commands::scan::execute(target, ports, *timeout, *workers, *ipv6),
+        Commands::Discover {
+            cidr,
+            ports,
+            timeout,
+            workers,
+        } => commands::discover::execute(cidr, ports, *timeout, *workers),
     };
 
     if let Err(message) = result {

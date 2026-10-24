@@ -46,6 +46,7 @@ const TABLE: &[PortEntry] = &[
     PortEntry { port: 465,  name: "smtps",       proto: "TCP",     desc: "Email sending over TLS" },
     PortEntry { port: 514,  name: "syslog",      proto: "UDP",     desc: "Log message shipping" },
     PortEntry { port: 587,  name: "submission",  proto: "TCP",     desc: "Email sending, client to server (TLS)" },
+    PortEntry { port: 631,  name: "ipp",         proto: "TCP",     desc: "Internet Printing Protocol (CUPS)" },
     PortEntry { port: 993,  name: "imaps",       proto: "TCP",     desc: "Email retrieval over TLS" },
     PortEntry { port: 995,  name: "pop3s",       proto: "TCP",     desc: "Email retrieval over TLS" },
     PortEntry { port: 1433, name: "mssql",       proto: "TCP",     desc: "Microsoft SQL Server" },
