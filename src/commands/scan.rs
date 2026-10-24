@@ -15,6 +15,29 @@ use super::{parse_ports, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESH
 /// announced (None when it stayed quiet).
 type ScanResult = (u16, Option<String>);
 
+// ============================================================
+// The JSON report (--json). Serde turns these structs into JSON;
+// the field names become the keys machines will read.
+// ============================================================
+
+#[derive(serde::Serialize)]
+struct PortFinding {
+    port: u16,
+    service: String,
+    banner: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ScanReport {
+    target: String,
+    resolved_ip: IpAddr,
+    ports_probed: usize,
+    timeout_seconds: f64,
+    workers: usize,
+    duration_seconds: f32,
+    open_ports: Vec<PortFinding>,
+}
+
 /// How long to wait for a banner after connecting, and how much of it to keep.
 /// Short on purpose: this is a bonus, not a reason to slow the scan down.
 const BANNER_TIMEOUT: Duration = Duration::from_millis(400);
@@ -97,6 +120,7 @@ fn scan_ports(
     ports: &[u16],
     timeout: Duration,
     workers: usize,
+    show_progress: bool,
 ) -> Vec<ScanResult> {
     let worker_count = workers.clamp(1, MAX_WORKERS).min(ports.len().max(1));
     let total = ports.len();
@@ -111,7 +135,7 @@ fn scan_ports(
     // Live progress for long scans: one line, updated in place with \r.
     // The loop re-checks `tried` after every sleep, so it always stops
     // once the last port has been attempted.
-    let progress_thread = if total >= PROGRESS_THRESHOLD {
+    let progress_thread = if show_progress && total >= PROGRESS_THRESHOLD {
         let tried = Arc::clone(&tried);
         Some(thread::spawn(move || {
             while tried.load(Ordering::Relaxed) < total {
@@ -178,6 +202,7 @@ pub fn execute(
     timeout_secs: f64,
     workers: usize,
     prefer_ipv6: bool,
+    json: bool,
 ) -> Result<(), String> {
     let started_at = std::time::Instant::now();
 
@@ -205,36 +230,72 @@ pub fn execute(
         format!("{} ({})", target, target_ip)
     };
 
-    println!("{}", "========================================".cyan());
-    println!("{}", " Scouter26 - Port Scanner".cyan().bold());
-    println!(" {}{}", "Target: ".cyan(), target_label.cyan());
-    println!(" {}{}", "Ports:  ".cyan(), ports.len().to_string().cyan());
-    println!("{}", "----------------------------------------".cyan());
-    println!(
-        "{}",
-        " [!] Only scan hosts you own or have permission to scan.".yellow()
-    );
+    // The permission warning goes to stderr in JSON mode so a pipeline
+    // reading stdout never sees anything but the report itself.
+    if json {
+        eprintln!(
+            "{}",
+            " [!] Only scan hosts you own or have permission to scan.".yellow()
+        );
+    } else {
+        println!("{}", "========================================".cyan());
+        println!("{}", " Scouter26 - Port Scanner".cyan().bold());
+        println!(" {}{}", "Target: ".cyan(), target_label.cyan());
+        println!(" {}{}", "Ports:  ".cyan(), ports.len().to_string().cyan());
+        println!("{}", "----------------------------------------".cyan());
+        println!(
+            "{}",
+            " [!] Only scan hosts you own or have permission to scan.".yellow()
+        );
+    }
 
-    // 4. Scan. Progress (if any) is handled inside scan_ports.
+    // 4. Scan. Progress (if any) is handled inside scan_ports, and is
+    //    suppressed in JSON mode so machines get a clean pipe.
     let results = scan_ports(
         target_ip,
         &ports,
         Duration::from_secs_f64(timeout_secs),
         workers,
+        !json,
     );
 
-    // 5. Print the results, sorted.
+    // 5. Report: JSON for machines, the banner table for humans.
+    if json {
+        let report = ScanReport {
+            target: target.to_string(),
+            resolved_ip: target_ip,
+            ports_probed: ports.len(),
+            timeout_seconds: timeout_secs,
+            workers,
+            duration_seconds: started_at.elapsed().as_secs_f32(),
+            open_ports: results
+                .iter()
+                .map(|(port, banner)| PortFinding {
+                    port: *port,
+                    service: ports::service_name(*port).to_string(),
+                    banner: banner.clone(),
+                })
+                .collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("ScanReport always serializes")
+        );
+        return Ok(());
+    }
+
     if results.is_empty() {
         println!("{}", " No open ports found.".yellow());
     } else {
-        for (port, banner) in results {
+        for (port, banner) in &results {
             let banner_text = banner
+                .as_ref()
                 .map(|text| format!("  {}", text.dimmed()))
                 .unwrap_or_default();
             println!(
                 " Port {:<6} {:<10} {}{}",
                 port,
-                ports::service_name(port),
+                ports::service_name(*port),
                 "OPEN".green().bold(),
                 banner_text
             );
@@ -334,6 +395,7 @@ mod tests {
             &[open_port, closed_port],
             Duration::from_millis(300),
             2,
+            false,
         );
 
         let open: Vec<u16> = results.iter().map(|(port, _)| *port).collect();
@@ -352,9 +414,33 @@ mod tests {
             &[open_port],
             Duration::from_millis(300),
             2,
+            false,
         );
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, open_port);
+    }
+
+    #[test]
+    fn scan_report_serializes_to_json() {
+        let report = ScanReport {
+            target: "example.test".to_string(),
+            resolved_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            ports_probed: 2,
+            timeout_seconds: 1.0,
+            workers: 200,
+            duration_seconds: 0.5,
+            open_ports: vec![PortFinding {
+                port: 22,
+                service: "ssh".to_string(),
+                banner: Some("SSH-2.0-Test".to_string()),
+            }],
+        };
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["target"], "example.test");
+        assert_eq!(value["resolved_ip"], "192.0.2.1");
+        assert_eq!(value["open_ports"][0]["port"], 22);
+        assert_eq!(value["open_ports"][0]["service"], "ssh");
+        assert_eq!(value["open_ports"][0]["banner"], "SSH-2.0-Test");
     }
 }

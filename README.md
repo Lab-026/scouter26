@@ -91,6 +91,8 @@ $ scouter26 scan scanme.nmap.org --ports 20-1024 --timeout 2 --workers 500
 - `--timeout` — seconds to wait per port before calling it closed (default: 1)
 - `--workers` — how many ports to probe at the same time (default: 200, max 2000)
 - `--ipv6` — prefer the IPv6 address when a hostname has both A and AAAA records
+- `--json` — machine-readable JSON report on stdout (warnings and errors go
+  to stderr), ready for `jq` and log pipelines
 
 Scans of 100+ ports show live progress. Both IPv4 and IPv6 targets work:
 dual-stack hostnames are scanned over IPv4 unless `--ipv6` is given, and a
@@ -126,6 +128,8 @@ $ scouter26 discover 192.168.1.0/24
 ```
 
 - `--ports`, `--timeout`, `--workers` work exactly as in `scan`
+- `--json` — machine-readable JSON report on stdout; `open_ports: []` on a
+  live host means it answered with refusals only
 - Sweeps are capped at 4096 hosts — use a longer prefix for anything wider
 - A host that silently drops every probe cannot be seen by TCP discovery
   (ICMP and ARP discovery are planned)

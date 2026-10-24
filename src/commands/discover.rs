@@ -85,6 +85,7 @@ fn sweep(
     probe_ports: &[u16],
     timeout: Duration,
     workers: usize,
+    show_progress: bool,
 ) -> Vec<(IpAddr, Vec<u16>)> {
     let total_probes = hosts.len() * probe_ports.len();
     let worker_count = workers.clamp(1, MAX_WORKERS).min(total_probes.max(1));
@@ -101,7 +102,7 @@ fn sweep(
     let alive: Arc<Mutex<HashMap<IpAddr, Vec<u16>>>> = Arc::new(Mutex::new(HashMap::new()));
     let tried = Arc::new(AtomicUsize::new(0));
 
-    let progress_thread = if total_probes >= PROGRESS_THRESHOLD {
+    let progress_thread = if show_progress && total_probes >= PROGRESS_THRESHOLD {
         let tried = Arc::clone(&tried);
         Some(thread::spawn(move || {
             while tried.load(Ordering::Relaxed) < total_probes {
@@ -176,12 +177,35 @@ fn sweep(
     results
 }
 
+// ============================================================
+// The JSON report (--json). Serde turns these structs into JSON;
+// the field names become the keys machines will read. An entry in
+// live_hosts with an empty open_ports list is a host that answered
+// with refusals only — alive, but nothing open.
+// ============================================================
+
+#[derive(serde::Serialize)]
+struct HostFinding {
+    ip: IpAddr,
+    open_ports: Vec<u16>,
+}
+
+#[derive(serde::Serialize)]
+struct DiscoverReport {
+    network: String,
+    hosts_probed: usize,
+    probed_ports: Vec<u16>,
+    duration_seconds: f32,
+    live_hosts: Vec<HostFinding>,
+}
+
 /// Entry point for `scouter26 discover <cidr>`.
 pub fn execute(
     cidr: &str,
     ports_arg: &Option<String>,
     timeout_secs: f64,
     workers: usize,
+    json: bool,
 ) -> Result<(), String> {
     let started_at = Instant::now();
 
@@ -215,24 +239,52 @@ pub fn execute(
         .collect::<Vec<_>>()
         .join(", ");
 
-    println!("{}", "========================================".cyan());
-    println!("{}", " Scouter26 - Host Discovery".cyan().bold());
-    println!(" {}{}", "Network:     ".cyan(), net.to_string().cyan());
-    println!(" {}{}", "Hosts:       ".cyan(), hosts.len().to_string().cyan());
-    println!(" {}{}", "Probe ports: ".cyan(), port_list.cyan());
-    println!(" {}{}", "Total probes:".cyan(), format!(" {}", total_probes).cyan());
-    println!("{}", "----------------------------------------".cyan());
-    println!(
-        "{}",
-        " [!] Only scan networks you own or have permission to scan.".yellow()
-    );
+    // The permission warning goes to stderr in JSON mode so a pipeline
+    // reading stdout never sees anything but the report itself.
+    if json {
+        eprintln!(
+            "{}",
+            " [!] Only scan networks you own or have permission to scan.".yellow()
+        );
+    } else {
+        println!("{}", "========================================".cyan());
+        println!("{}", " Scouter26 - Host Discovery".cyan().bold());
+        println!(" {}{}", "Network:     ".cyan(), net.to_string().cyan());
+        println!(" {}{}", "Hosts:       ".cyan(), hosts.len().to_string().cyan());
+        println!(" {}{}", "Probe ports: ".cyan(), port_list.cyan());
+        println!(" {}{}", "Total probes:".cyan(), format!(" {}", total_probes).cyan());
+        println!("{}", "----------------------------------------".cyan());
+        println!(
+            "{}",
+            " [!] Only scan networks you own or have permission to scan.".yellow()
+        );
+    }
 
     let results = sweep(
         &hosts,
         &probe_ports,
         Duration::from_secs_f64(timeout_secs),
         workers,
+        !json,
     );
+
+    if json {
+        let report = DiscoverReport {
+            network: net.to_string(),
+            hosts_probed: hosts.len(),
+            probed_ports: probe_ports,
+            duration_seconds: started_at.elapsed().as_secs_f32(),
+            live_hosts: results
+                .into_iter()
+                .map(|(ip, open_ports)| HostFinding { ip, open_ports })
+                .collect(),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("DiscoverReport always serializes")
+        );
+        return Ok(());
+    }
 
     println!("{}", "========================================".cyan());
     if results.is_empty() {
@@ -324,6 +376,7 @@ mod tests {
             &[open_port],
             Duration::from_millis(300),
             2,
+            false,
         );
 
         assert_eq!(results.len(), 1);
@@ -344,9 +397,29 @@ mod tests {
             &[closed_port],
             Duration::from_millis(300),
             2,
+            false,
         );
 
         assert_eq!(results.len(), 1, "the host must be found alive");
         assert!(results[0].1.is_empty(), "but the port must not count as open");
+    }
+
+    #[test]
+    fn discover_report_serializes_to_json() {
+        let report = DiscoverReport {
+            network: "192.168.1.0/24".to_string(),
+            hosts_probed: 254,
+            probed_ports: vec![22, 80],
+            duration_seconds: 6.4,
+            live_hosts: vec![HostFinding {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                open_ports: vec![80],
+            }],
+        };
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["network"], "192.168.1.0/24");
+        assert_eq!(value["hosts_probed"], 254);
+        assert_eq!(value["live_hosts"][0]["ip"], "192.168.1.1");
+        assert_eq!(value["live_hosts"][0]["open_ports"][0], 80);
     }
 }

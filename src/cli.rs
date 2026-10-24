@@ -42,6 +42,9 @@ pub enum Commands {
         /// Prefer the IPv6 address when a hostname has both A and AAAA records
         #[arg(long)]
         ipv6: bool,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
     },
     /// Find live hosts in a subnet by probing common ports on every address
     Discover {
@@ -57,5 +60,8 @@ pub enum Commands {
         /// How many probes to send at the same time (1-2000)
         #[arg(long, default_value_t = 200)]
         workers: usize,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
     },
 }
