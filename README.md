@@ -9,23 +9,25 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 
 ## Commands
 
-| Command                      | Description                           |
-| ---------------------------- | ------------------------------------- |
-| `scouter26 subnet <cidr>`    | Full IPv4 subnet breakdown            |
-| `scouter26 ports <query>`    | Port lookup by number or service name |
-| `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4)      |
+| Command                      | Description                              |
+| ---------------------------- | ---------------------------------------- |
+| `scouter26 subnet <cidr>`    | Full IPv4 **and IPv6** subnet breakdown  |
+| `scouter26 ports <query>`    | Port lookup by number or service name    |
+| `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4 & IPv6)  |
 
 ## subnet
 
-Give it an IPv4 CIDR and it returns the network address, netmask, wildcard
-mask, broadcast address, usable host range, host counts, IP class, and whether
-the range is private (RFC 1918) or public.
+Give it a CIDR — IPv4 **or** IPv6 — and it returns the network address,
+netmask, wildcard mask, broadcast address, usable host range, host counts, IP
+class, and whether the range is private (RFC 1918) or public. IPv6 reports
+network ID, full address range, total counts, and the address kind
+(global unicast, link-local, unique-local, ...).
 
 ```text
 $ scouter26 subnet 192.168.10.0/24
 
 ========================================
- Scouter26 - Subnet Analysis
+ Scouter26 - Subnet Analysis (IPv4)
 ========================================
  Input IP      : 192.168.10.0
  Prefix        : /24
@@ -41,7 +43,23 @@ $ scouter26 subnet 192.168.10.0/24
 ========================================
 ```
 
-IPv6 is rejected with a clear error message (support planned).
+```text
+$ scouter26 subnet 2001:db8::/32
+
+========================================
+ Scouter26 - Subnet Analysis (IPv6)
+========================================
+ Input IP        : 2001:db8::
+ Prefix          : /32
+ Network ID      : 2001:db8::
+ Host Range      : 2001:db8:: - 2001:db8:ffff:ffff:ffff:ffff:ffff:ffff
+ Total Addresses : 79,228,162,514,264,337,593,543,950,336
+ Usable Addresses: 79,228,162,514,264,337,593,543,950,336
+ Type            : Documentation (2001:db8::/32)
+========================================
+```
+
+A bare address with no `/prefix` means a single host (`/32` or `/128`).
 
 ## ports
 
@@ -71,10 +89,11 @@ $ scouter26 scan scanme.nmap.org --ports 20-1024 --timeout 2 --workers 500
   (default: the 10 most common ports)
 - `--timeout` — seconds to wait per port before calling it closed (default: 1)
 - `--workers` — how many ports to probe at the same time (default: 200, max 2000)
+- `--ipv6` — prefer the IPv6 address when a hostname has both A and AAAA records
 
-Scans of 100+ ports show live progress. scouter26 is IPv4-only: a hostname
-that resolves exclusively to IPv6 (AAAA) records is refused with a clear
-error rather than silently scanned.
+Scans of 100+ ports show live progress. Both IPv4 and IPv6 targets work:
+dual-stack hostnames are scanned over IPv4 unless `--ipv6` is given, and a
+bare IPv6 address (or an IPv6-only hostname) scans over IPv6 directly.
 
 > **Warning:** Only scan systems you own or have written permission to scan.
 > Unauthorized port scanning is illegal in many jurisdictions.

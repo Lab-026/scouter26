@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -80,14 +80,14 @@ fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
     Ok(ports)
 }
 
-/// Turn a hostname or IP string into one IPv4 address.
+/// Turn a hostname or IP string into one IP address (either family).
 ///
-/// scouter26 is an IPv4 tool (the `subnet` command rejects IPv6 too), so
-/// AAAA answers are deliberately skipped. A bare IP skips DNS entirely;
-/// a name that only resolves to IPv6 gets a clear error instead of being
-/// scanned over the wrong protocol family.
-fn resolve_ipv4(target: &str) -> Result<Ipv4Addr, String> {
-    if let Ok(ip) = target.parse::<Ipv4Addr>() {
+/// A bare IP skips DNS entirely. A hostname that resolves to both
+/// families gets its IPv4 address first — the same default nmap uses —
+/// unless the user asked for IPv6 with --ipv6. Single-family names
+/// simply get whatever they have, so IPv6-only hosts scan normally.
+fn resolve_target(target: &str, prefer_ipv6: bool) -> Result<IpAddr, String> {
+    if let Ok(ip) = target.parse::<IpAddr>() {
         return Ok(ip);
     }
 
@@ -96,18 +96,17 @@ fn resolve_ipv4(target: &str) -> Result<Ipv4Addr, String> {
         Err(_) => return Err(format!("could not resolve '{}' to an IP address", target)),
     };
 
-    addrs
-        .iter()
-        .find_map(|addr| match addr.ip() {
-            IpAddr::V4(v4) => Some(v4),
-            IpAddr::V6(_) => None,
+    let pick = |want_v6: bool| {
+        addrs.iter().find_map(|addr| match addr.ip() {
+            IpAddr::V6(v6) if want_v6 => Some(IpAddr::V6(v6)),
+            IpAddr::V4(v4) if !want_v6 => Some(IpAddr::V4(v4)),
+            _ => None,
         })
-        .ok_or_else(|| {
-            format!(
-                "'{}' only resolves to IPv6 addresses, and scouter26 scans IPv4 only",
-                target
-            )
-        })
+    };
+
+    pick(prefer_ipv6)
+        .or_else(|| pick(!prefer_ipv6))
+        .ok_or_else(|| format!("'{}' did not resolve to any usable IP address", target))
 }
 
 /// After a successful connect, some services announce themselves
@@ -150,13 +149,14 @@ fn unlock<T>(poisoned: std::sync::PoisonError<std::sync::MutexGuard<'_, T>>) -> 
     poisoned.into_inner()
 }
 
-/// Probe the given ports on one IPv4 address and return the open ones
-/// (sorted, each with whatever banner the service announced).
+/// Probe the given ports on one IP address (IPv4 or IPv6) and return
+/// the open ones (sorted, each with whatever banner the service
+/// announced).
 ///
 /// Pure worker: no printing except the progress line, so it can be
 /// unit-tested against a real local listener.
 fn scan_ports(
-    target: Ipv4Addr,
+    target: IpAddr,
     ports: &[u16],
     timeout: Duration,
     workers: usize,
@@ -240,6 +240,7 @@ pub fn execute(
     ports_arg: &Option<String>,
     timeout_secs: f64,
     workers: usize,
+    prefer_ipv6: bool,
 ) -> Result<(), String> {
     let started_at = std::time::Instant::now();
 
@@ -262,11 +263,11 @@ pub fn execute(
         None => DEFAULT_PORTS.to_vec(),
     };
 
-    // 3. Resolve the hostname ONCE, IPv4 only.
-    let target_ip = resolve_ipv4(target)?;
+    // 3. Resolve the hostname ONCE, IPv4 by default, --ipv6 to switch.
+    let target_ip = resolve_target(target, prefer_ipv6)?;
 
     // If the user gave us a bare IP, don't print "1.2.3.4 (1.2.3.4)".
-    let target_label = if target.parse::<Ipv4Addr>().is_ok() {
+    let target_label = if target.parse::<IpAddr>().is_ok() {
         target.to_string()
     } else {
         format!("{} ({})", target, target_ip)
@@ -320,6 +321,7 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn single_port() {
@@ -364,9 +366,13 @@ mod tests {
     }
 
     #[test]
-    fn bare_ipv4_resolves_without_dns() {
-        assert_eq!(resolve_ipv4("127.0.0.1"), Ok(Ipv4Addr::LOCALHOST));
-        assert_eq!(resolve_ipv4("192.168.1.1"), Ok(Ipv4Addr::new(192, 168, 1, 1)));
+    fn bare_ips_resolve_without_dns() {
+        assert_eq!(
+            resolve_target("127.0.0.1", false),
+            Ok(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        );
+        assert_eq!(resolve_target("::1", true), Ok(IpAddr::V6("::1".parse().unwrap())));
+        assert!(resolve_target("not_a_host", false).is_err());
     }
 
     #[test]
@@ -392,7 +398,7 @@ mod tests {
         drop(closed_handle);
 
         let results = scan_ports(
-            Ipv4Addr::LOCALHOST,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
             &[open_port, closed_port],
             Duration::from_millis(300),
             2,
@@ -401,5 +407,22 @@ mod tests {
         let open: Vec<u16> = results.iter().map(|(port, _)| *port).collect();
         assert!(open.contains(&open_port), "the listening port must be found open");
         assert!(!open.contains(&closed_port), "the released port must be closed");
+    }
+
+    #[test]
+    fn finds_a_real_listening_port_over_ipv6() {
+        // Same idea on the IPv6 loopback — the whole point of Phase 11.
+        let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let open_port = listener.local_addr().unwrap().port();
+
+        let results = scan_ports(
+            IpAddr::V6("::1".parse().unwrap()),
+            &[open_port],
+            Duration::from_millis(300),
+            2,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, open_port);
     }
 }

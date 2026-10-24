@@ -19,7 +19,8 @@ fn main() {
             ports,
             timeout,
             workers,
-        } => commands::scan::execute(target, ports, *timeout, *workers),
+            ipv6,
+        } => commands::scan::execute(target, ports, *timeout, *workers, *ipv6),
     };
 
     if let Err(message) = result {

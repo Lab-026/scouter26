@@ -14,9 +14,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Calculate subnet details from CIDR notation
+    /// Calculate subnet details from CIDR notation (IPv4 or IPv6)
     Subnet {
-        /// The IPv4 address in CIDR notation (e.g., 192.168.1.10/24)
+        /// An IPv4 or IPv6 address in CIDR notation
+        /// (e.g., 192.168.1.10/24 or 2001:db8::/32)
         cidr: String,
     },
     /// Look up common network ports and protocols
@@ -38,5 +39,8 @@ pub enum Commands {
         /// How many ports to probe at the same time (1-2000)
         #[arg(long, default_value_t = 200)]
         workers: usize,
+        /// Prefer the IPv6 address when a hostname has both A and AAAA records
+        #[arg(long)]
+        ipv6: bool,
     },
 }
