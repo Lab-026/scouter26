@@ -206,7 +206,14 @@ wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-amd
 sudo apt install ./scouter26-amd64.deb
 ```
 
-**Fedora, RHEL, openSUSE (.rpm):**
+**Fedora 43/44 (COPR repository — one command, and updates arrive automatically):**
+
+```text
+sudo dnf copr enable nobody26/scouter26
+sudo dnf install scouter26
+```
+
+**Fedora, RHEL, openSUSE (.rpm file, no repository):**
 
 ```text
 wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64.rpm
