@@ -39,7 +39,11 @@ pub(crate) enum TraceEvent {
     Destination(u16),
 }
 
-pub(crate) fn classify_trace_reply(datagram: &[u8], our_id: u16) -> Option<TraceEvent> {
+pub(crate) fn classify_trace_reply(
+    datagram: &[u8],
+    our_id: u16,
+    expected_destination: Ipv4Addr,
+) -> Option<TraceEvent> {
     if datagram.len() < 28 {
         return None;
     }
@@ -60,10 +64,13 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], our_id: u16) -> Option<Trace
 
     match icmp[0] {
         ICMP_ECHO_REPLY => {
-            // Echo Reply — the destination itself answered our last probe.
+            // Echo Reply — but only trust it when it comes from the host
+            // we actually set out to reach. A matching identifier alone is
+            // not proof of identity: any other echo traffic on this
+            // machine (or a spoofed reply) could carry the same numbers.
             let id = u16::from_be_bytes([icmp[4], icmp[5]]);
             let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
-            if id == our_id {
+            if id == our_id && source == expected_destination {
                 Some(TraceEvent::Destination(seq))
             } else {
                 None
@@ -207,7 +214,7 @@ pub fn execute(
             let Some(n) = socket.recv(&mut buf) else {
                 break; // timeout slice elapsed: no answer for this hop
             };
-            let event = classify_trace_reply(&buf[..n], identifier);
+            let event = classify_trace_reply(&buf[..n], identifier, target_ip);
             let ours = event.as_ref().is_some_and(|event| match event {
                 TraceEvent::Router(_, s) | TraceEvent::Destination(s) => *s == seq,
             });
@@ -345,7 +352,7 @@ mod tests {
     #[test]
     fn echo_replies_classify_as_the_destination() {
         let datagram = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
-        match classify_trace_reply(&datagram, 0x1964) {
+        match classify_trace_reply(&datagram, 0x1964, Ipv4Addr::new(1, 1, 1, 1)) {
             Some(TraceEvent::Destination(5)) => {}
             other => panic!("expected Destination(5), got {:?}", other),
         }
@@ -370,7 +377,7 @@ mod tests {
         let embedded_icmp = &mut datagram[48..56];
         embedded_icmp.copy_from_slice(&original[..8]);
 
-        match classify_trace_reply(&datagram, 0x1964) {
+        match classify_trace_reply(&datagram, 0x1964, Ipv4Addr::new(1, 1, 1, 1)) {
             Some(TraceEvent::Router(ip, 3)) => {
                 assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
             }
@@ -381,11 +388,11 @@ mod tests {
     #[test]
     fn other_peoples_icmp_is_ignored() {
         let wrong_id = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0xBEEF, 5);
-        assert!(classify_trace_reply(&wrong_id, 0x1964).is_none());
+        assert!(classify_trace_reply(&wrong_id, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
 
         let mut not_icmp = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
         not_icmp[9] = 6; // protocol: TCP — not our kind of mail
-        assert!(classify_trace_reply(&not_icmp, 0x1964).is_none());
+        assert!(classify_trace_reply(&not_icmp, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
 
         // A Time Exceeded whose embedded packet is not an echo request.
         let mut strange = vec![0u8; 20 + 8 + 20 + 8];
@@ -394,7 +401,22 @@ mod tests {
         strange[12..16].copy_from_slice(&[198, 51, 100, 7]);
         strange[20] = 11;
         strange[48] = 13; // embedded type: not an echo request
-        assert!(classify_trace_reply(&strange, 0x1964).is_none());
+        assert!(classify_trace_reply(&strange, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+    }
+
+    #[test]
+    fn an_echo_reply_from_the_wrong_host_is_not_the_destination() {
+        // Regression for the traceroute source-validation gap: a matching
+        // identifier and sequence are not enough — the reply must come
+        // from the host we set out to reach.
+        let impostor = datagram([203, 0, 113, 9], ICMP_ECHO_REPLY, 0x1964, 5);
+        assert!(classify_trace_reply(&impostor, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+
+        let genuine = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
+        assert_eq!(
+            classify_trace_reply(&genuine, 0x1964, Ipv4Addr::new(1, 1, 1, 1)),
+            Some(TraceEvent::Destination(5))
+        );
     }
 
     #[test]

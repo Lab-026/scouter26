@@ -26,8 +26,9 @@ jobs:
       # Step 4: the actual test — all tests must pass or the run goes red
       - run: cargo test --verbose
 
-      # Step 5: quality gates. Tests prove the code is right; these prove
-      # it is also clean and consistent, so quality can never quietly rot.
+      # Step 5: quality gates. Tests check the code against its known
+      # scenarios (they cannot prove every edge case); these check that
+      # the code is also clean and consistent, so quality never rots.
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
 

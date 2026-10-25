@@ -86,6 +86,20 @@ to raw packet surgery — with every phase verified against live networks
 - The raw-socket engine and local-source detection are now shared
   infrastructure used by both `syn` and `trace`.
 
+## [1.4.1] - 2026-10-26
+
+### Fixed
+- **Traceroute reply validation**: an Echo Reply was accepted as "destination
+  reached" based on matching identifier and sequence alone — it must now also
+  come from the destination's own address, with a regression test for a reply
+  from an impostor host. (Found by an external source-level review.)
+- README: the crates.io install command appeared before crates.io
+  publication — replaced with a working install-from-git command, and the
+  plain-binary instructions now have separate x86_64 and aarch64 commands.
+- README examples match current output (historic class label), and the SYN
+  section no longer calls the technique "stealth" — half-open is not
+  invisible, and the text says so.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

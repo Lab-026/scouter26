@@ -42,7 +42,7 @@ The [packaging/PKGBUILD](packaging/PKGBUILD) builds a `scouter26-bin`
 package from the official release tarball — local install and AUR
 publishing steps are in [packaging/README.md](packaging/README.md).
 
-**Plain binary, any distro (x86_64 or aarch64):**
+**Plain binary — x86_64 (Intel/AMD):**
 
 ```text
 wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64-unknown-linux-gnu.tar.gz
@@ -50,10 +50,20 @@ tar xf scouter26-x86_64-unknown-linux-gnu.tar.gz
 sudo install -m755 scouter26 /usr/local/bin/
 ```
 
-**Any Linux system (or macOS, mostly) with Rust:**
+**Plain binary — aarch64 (ARM):**
 
 ```text
-cargo install --locked scouter26
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-aarch64-unknown-linux-gnu.tar.gz
+tar xf scouter26-aarch64-unknown-linux-gnu.tar.gz
+sudo install -m755 scouter26 /usr/local/bin/
+```
+
+Not sure which you have? `uname -m` prints it: `x86_64` or `aarch64`.
+
+**Any Linux system (or macOS, mostly) with Rust — built from this repository:**
+
+```text
+cargo install --locked --git https://github.com/Lab-026/scouter26
 ```
 
 scouter26 is Linux-first: every command is built and tested there. On macOS
@@ -61,8 +71,9 @@ the pure commands (subnet, ports) and TCP-based ones work; the raw-packet
 commands (syn, trace) need `sudo` just like on Linux, and Windows is a
 future milestone — raw sockets there follow entirely different rules.
 
-(available once scouter26 makes its first crates.io publish; `cargo
-binstall scouter26` already works with the release tarballs)
+(The git command above works today. A one-line `cargo install --locked
+scouter26` from crates.io replaces it once the first publish happens, and
+`cargo binstall scouter26` already works with the release tarballs.)
 
 > **Note:** The official Debian, Fedora and Arch *repositories* have their
 > own review processes — that milestone (scouter26 in `apt`, `dnf` and the
