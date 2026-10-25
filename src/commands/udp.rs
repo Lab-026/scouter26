@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use colored::*;
 
 use super::ports;
-use super::{parse_ports, resolve_target, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD};
+use super::{
+    MAX_WORKERS, PROGRESS_THRESHOLD, parse_ports, resolve_target, unlock, validate_tunables,
+};
 
 /// The ports probed when the user does not pick their own — the classic
 /// UDP services that are common, interesting, or loud. Kept small on
@@ -36,7 +38,7 @@ const DNS_QUERY: &[u8] = &[
     0x00, 0x00, // ARCOUNT = 0
     0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', // label "example"
     0x03, b'c', b'o', b'm', //                      label "com"
-    0x00,       // root label, ends the name
+    0x00, // root label, ends the name
     0x00, 0x01, // QTYPE = A
     0x00, 0x01, // QCLASS = IN
 ];
@@ -125,8 +127,17 @@ impl UdpVerdict {
 /// handed to the socket by the NEXT syscall, so attempt 2's send/recv is
 /// what actually notices closed ports. (nmap retransmits for the same
 /// reason.)
-fn udp_probe(target: IpAddr, port: u16, timeout: Duration, socket_errors: &AtomicUsize) -> UdpVerdict {
-    let bind_addr = if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+fn udp_probe(
+    target: IpAddr,
+    port: u16,
+    timeout: Duration,
+    socket_errors: &AtomicUsize,
+) -> UdpVerdict {
+    let bind_addr = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
     let Ok(socket) = UdpSocket::bind(bind_addr) else {
         socket_errors.fetch_add(1, Ordering::Relaxed);
         return UdpVerdict::OpenFiltered;
@@ -190,7 +201,11 @@ fn sweep(
         let tried = Arc::clone(&tried);
         Some(thread::spawn(move || {
             while tried.load(Ordering::Relaxed) < total {
-                print!("\r [..] {} / {} probes sent", tried.load(Ordering::Relaxed), total);
+                print!(
+                    "\r [..] {} / {} probes sent",
+                    tried.load(Ordering::Relaxed),
+                    total
+                );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
                 thread::sleep(Duration::from_millis(250));
             }
@@ -206,15 +221,17 @@ fn sweep(
         let tried = Arc::clone(&tried);
         let socket_errors = Arc::clone(&socket_errors);
 
-        handles.push(thread::spawn(move || loop {
-            let next = todo.lock().unwrap_or_else(unlock).pop_front();
-            let port = match next {
-                Some(port) => port,
-                None => break,
-            };
-            let verdict = udp_probe(target, port, timeout, &socket_errors);
-            results.lock().unwrap_or_else(unlock).push((port, verdict));
-            tried.fetch_add(1, Ordering::Relaxed);
+        handles.push(thread::spawn(move || {
+            loop {
+                let next = todo.lock().unwrap_or_else(unlock).pop_front();
+                let port = match next {
+                    Some(port) => port,
+                    None => break,
+                };
+                let verdict = udp_probe(target, port, timeout, &socket_errors);
+                results.lock().unwrap_or_else(unlock).push((port, verdict));
+                tried.fetch_add(1, Ordering::Relaxed);
+            }
         }));
     }
 
@@ -400,13 +417,28 @@ mod tests {
 
     #[test]
     fn payloads_match_their_protocols() {
-        assert_eq!(probe_payload(53).len(), 29, "DNS query: header + example.com + A/IN");
-        assert_eq!(probe_payload(123).len(), 48, "NTP requests are fixed at 48 bytes");
+        assert_eq!(
+            probe_payload(53).len(),
+            29,
+            "DNS query: header + example.com + A/IN"
+        );
+        assert_eq!(
+            probe_payload(123).len(),
+            48,
+            "NTP requests are fixed at 48 bytes"
+        );
         assert_eq!(probe_payload(161).len(), 40, "hand-encoded SNMPv1 GET");
-        assert_eq!(probe_payload(123)[0], 0x1B, "LI=0, version=3, mode=3 (client)");
+        assert_eq!(
+            probe_payload(123)[0],
+            0x1B,
+            "LI=0, version=3, mode=3 (client)"
+        );
         assert_eq!(probe_payload(514).len(), 0, "syslog gets an empty datagram");
         // The DNS question must be a proper name: 7"example" 3"com" 0.
-        assert_eq!(&probe_payload(53)[12..21], &[0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03]);
+        assert_eq!(
+            &probe_payload(53)[12..21],
+            &[0x07, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x03]
+        );
     }
 
     #[test]

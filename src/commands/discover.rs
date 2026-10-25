@@ -10,8 +10,8 @@ use colored::*;
 use ipnet::IpNet;
 
 use super::ports;
-use super::{parse_ports, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD};
 use super::subnet::normalize_cidr;
+use super::{MAX_WORKERS, PROGRESS_THRESHOLD, parse_ports, unlock, validate_tunables};
 
 /// Ports probed on every host when the user does not pick their own —
 /// the classic LAN services: SSH, HTTP, HTTPS, SMB, RDP.
@@ -54,6 +54,48 @@ pub fn hosts_in_net(net: IpNet) -> Vec<IpAddr> {
     }
 }
 
+/// How many hosts a network holds, computed from the prefix length alone —
+/// no memory allocated. This is what makes the sweep cap check safe to run
+/// BEFORE generating anything: counting a /0 must never cost 137 GB.
+fn count_hosts(net: IpNet) -> u128 {
+    match net {
+        IpNet::V4(v4) => {
+            let prefix = v4.prefix_len();
+            if prefix >= 32 {
+                1
+            } else if prefix == 31 {
+                2
+            } else {
+                (super::subnet::total_addresses(prefix) - 2) as u128
+            }
+        }
+        IpNet::V6(v6) => {
+            let prefix = v6.prefix_len();
+            if prefix >= 128 {
+                1
+            } else if prefix == 0 {
+                u128::MAX // 2^128 does not fit; saturate — any cap rejects it
+            } else {
+                1u128 << (128 - prefix)
+            }
+        }
+    }
+}
+
+/// The gate every sweep passes through: count first, refuse anything
+/// wider than the cap, and only then materialise the address list.
+pub(crate) fn plan_hosts(net: IpNet) -> Result<Vec<IpAddr>, String> {
+    let count = count_hosts(net);
+    if count > MAX_SWEEP_HOSTS as u128 {
+        return Err(format!(
+            "{} hosts is too wide for a sweep (max {}). Use a longer prefix, e.g. /24.",
+            super::subnet::group_digits(&count.to_string()),
+            MAX_SWEEP_HOSTS
+        ));
+    }
+    Ok(hosts_in_net(net))
+}
+
 /// The verdict of one TCP probe.
 ///
 /// The interesting one is Refused: an RST packet came back, which means a
@@ -93,7 +135,11 @@ fn sweep(
     let todo: Arc<Mutex<VecDeque<Probe>>> = Arc::new(Mutex::new(
         hosts
             .iter()
-            .flat_map(|host| probe_ports.iter().map(move |&port| Probe { host: *host, port }))
+            .flat_map(|host| {
+                probe_ports
+                    .iter()
+                    .map(move |&port| Probe { host: *host, port })
+            })
             .collect(),
     ));
 
@@ -126,36 +172,45 @@ fn sweep(
         let alive = Arc::clone(&alive);
         let tried = Arc::clone(&tried);
 
-        handles.push(thread::spawn(move || loop {
-            let next = todo.lock().unwrap_or_else(unlock).pop_front();
-            let task = match next {
-                Some(task) => task,
-                None => break, // to-do list is empty - work is done
-            };
+        handles.push(thread::spawn(move || {
+            loop {
+                let next = todo.lock().unwrap_or_else(unlock).pop_front();
+                let task = match next {
+                    Some(task) => task,
+                    None => break, // to-do list is empty - work is done
+                };
 
-            match probe(task.host, task.port, timeout) {
-                ProbeVerdict::Open => {
-                    alive
-                        .lock()
-                        .unwrap_or_else(unlock)
-                        .entry(task.host)
-                        .or_default()
-                        .push(task.port);
+                match probe(task.host, task.port, timeout) {
+                    ProbeVerdict::Open => {
+                        alive
+                            .lock()
+                            .unwrap_or_else(unlock)
+                            .entry(task.host)
+                            .or_default()
+                            .push(task.port);
+                    }
+                    ProbeVerdict::Refused => {
+                        alive
+                            .lock()
+                            .unwrap_or_else(unlock)
+                            .entry(task.host)
+                            .or_default();
+                    }
+                    ProbeVerdict::NoAnswer => {}
                 }
-                ProbeVerdict::Refused => {
-                    alive.lock().unwrap_or_else(unlock).entry(task.host).or_default();
-                }
-                ProbeVerdict::NoAnswer => {}
+
+                tried.fetch_add(1, Ordering::Relaxed);
             }
-
-            tried.fetch_add(1, Ordering::Relaxed);
         }));
     }
 
     // Wait for every worker to finish.
     for handle in handles {
         if handle.join().is_err() {
-            eprintln!("{}", "Warning: a discovery worker exited unexpectedly".yellow());
+            eprintln!(
+                "{}",
+                "Warning: a discovery worker exited unexpectedly".yellow()
+            );
         }
     }
 
@@ -212,7 +267,12 @@ pub fn execute(
     validate_tunables(timeout_secs, workers)?;
 
     let probe_ports: Vec<u16> = match ports_arg {
-        Some(spec) => parse_ports(spec)?,
+        Some(spec) => parse_ports(spec).map_err(|message| {
+            format!(
+                "{}\nExamples: --ports 80, --ports 22,80,443, --ports 1-1024",
+                message
+            )
+        })?,
         None => DEFAULT_DISCOVERY_PORTS.to_vec(),
     };
 
@@ -223,15 +283,7 @@ pub fn execute(
         )
     })?;
 
-    let hosts = hosts_in_net(net);
-    if hosts.len() > MAX_SWEEP_HOSTS {
-        return Err(format!(
-            "{} hosts is too wide for a sweep (max {}). Use a longer prefix, e.g. /24.",
-            hosts.len(),
-            MAX_SWEEP_HOSTS
-        ));
-    }
-
+    let hosts = plan_hosts(net)?;
     let total_probes = hosts.len() * probe_ports.len();
     let port_list = probe_ports
         .iter()
@@ -250,9 +302,17 @@ pub fn execute(
         println!("{}", "========================================".cyan());
         println!("{}", " Scouter26 - Host Discovery".cyan().bold());
         println!(" {}{}", "Network:     ".cyan(), net.to_string().cyan());
-        println!(" {}{}", "Hosts:       ".cyan(), hosts.len().to_string().cyan());
+        println!(
+            " {}{}",
+            "Hosts:       ".cyan(),
+            hosts.len().to_string().cyan()
+        );
         println!(" {}{}", "Probe ports: ".cyan(), port_list.cyan());
-        println!(" {}{}", "Total probes:".cyan(), format!(" {}", total_probes).cyan());
+        println!(
+            " {}{}",
+            "Total probes:".cyan(),
+            format!(" {}", total_probes).cyan()
+        );
         println!("{}", "----------------------------------------".cyan());
         println!(
             "{}",
@@ -401,7 +461,10 @@ mod tests {
         );
 
         assert_eq!(results.len(), 1, "the host must be found alive");
-        assert!(results[0].1.is_empty(), "but the port must not count as open");
+        assert!(
+            results[0].1.is_empty(),
+            "but the port must not count as open"
+        );
     }
 
     #[test]
@@ -421,5 +484,38 @@ mod tests {
         assert_eq!(value["hosts_probed"], 254);
         assert_eq!(value["live_hosts"][0]["ip"], "192.168.1.1");
         assert_eq!(value["live_hosts"][0]["open_ports"][0], 80);
+    }
+
+    #[test]
+    fn host_counts_come_from_prefix_math_alone() {
+        // No memory is allocated to answer these — that is the point.
+        assert_eq!(
+            count_hosts(IpNet::from_str("0.0.0.0/0").unwrap()),
+            4_294_967_294
+        );
+        assert_eq!(count_hosts(IpNet::from_str("2001:db8::/120").unwrap()), 256);
+    }
+
+    #[test]
+    fn the_sweep_cap_is_enforced_before_generation() {
+        // Regression guards for the memory bug: these must be refused
+        // BEFORE any address is materialised. Generating 4 billion IPs
+        // (a /4... or a /0) to then refuse them would exhaust memory first.
+        assert!(plan_hosts(IpNet::from_str("192.168.0.0/16").unwrap()).is_err());
+        assert!(plan_hosts(IpNet::from_str("2001:db8::/64").unwrap()).is_err());
+        assert!(plan_hosts(IpNet::from_str("2001:db8::/0").unwrap()).is_err());
+        // Small networks pass through untouched.
+        assert_eq!(
+            plan_hosts(IpNet::from_str("192.168.1.0/24").unwrap())
+                .unwrap()
+                .len(),
+            254
+        );
+        assert_eq!(
+            plan_hosts(IpNet::from_str("2001:db8::/124").unwrap())
+                .unwrap()
+                .len(),
+            16
+        );
     }
 }

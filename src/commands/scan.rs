@@ -10,7 +10,7 @@ use colored::*;
 
 use super::ports;
 use super::{
-    parse_ports, resolve_target, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD,
+    MAX_WORKERS, PROGRESS_THRESHOLD, parse_ports, resolve_target, unlock, validate_tunables,
 };
 
 /// One scan result: a port number plus whatever banner the service
@@ -62,11 +62,7 @@ fn grab_banner(mut stream: TcpStream) -> Option<String> {
         return None;
     }
     let text = sanitize_banner(&buf[..n]);
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Keep only printable ASCII and stop at the first control character,
@@ -113,7 +109,11 @@ fn scan_ports(
         let tried = Arc::clone(&tried);
         Some(thread::spawn(move || {
             while tried.load(Ordering::Relaxed) < total {
-                print!("\r [..] {} / {} ports tried", tried.load(Ordering::Relaxed), total);
+                print!(
+                    "\r [..] {} / {} ports tried",
+                    tried.load(Ordering::Relaxed),
+                    total
+                );
                 let _ = std::io::stdout().flush();
                 thread::sleep(Duration::from_millis(250));
             }
@@ -129,34 +129,39 @@ fn scan_ports(
         let open_ports = Arc::clone(&open_ports);
         let tried = Arc::clone(&tried);
 
-        workers_handles.push(thread::spawn(move || loop {
-            // Take the next port off the to-do list. The statement ends
-            // the borrow immediately, so we never hold the lock while
-            // doing network work - that would make workers wait in line.
-            let next_port = todo.lock().unwrap_or_else(unlock).pop_front();
+        workers_handles.push(thread::spawn(move || {
+            loop {
+                // Take the next port off the to-do list. The statement ends
+                // the borrow immediately, so we never hold the lock while
+                // doing network work - that would make workers wait in line.
+                let next_port = todo.lock().unwrap_or_else(unlock).pop_front();
 
-            let port = match next_port {
-                Some(port) => port,
-                None => break, // to-do list is empty - work is done
-            };
+                let port = match next_port {
+                    Some(port) => port,
+                    None => break, // to-do list is empty - work is done
+                };
 
-            let address = SocketAddr::from((target, port));
-            if let Ok(stream) = TcpStream::connect_timeout(&address, timeout) {
-                let banner = grab_banner(stream);
-                open_ports
-                    .lock()
-                    .unwrap_or_else(unlock)
-                    .push((port, banner));
+                let address = SocketAddr::from((target, port));
+                if let Ok(stream) = TcpStream::connect_timeout(&address, timeout) {
+                    let banner = grab_banner(stream);
+                    open_ports
+                        .lock()
+                        .unwrap_or_else(unlock)
+                        .push((port, banner));
+                }
+
+                tried.fetch_add(1, Ordering::Relaxed);
             }
-
-            tried.fetch_add(1, Ordering::Relaxed);
         }));
     }
 
     // Wait for every worker to finish.
     for worker in workers_handles {
         if worker.join().is_err() {
-            eprintln!("{}", "Warning: a scanner worker exited unexpectedly".yellow());
+            eprintln!(
+                "{}",
+                "Warning: a scanner worker exited unexpectedly".yellow()
+            );
         }
     }
 
@@ -279,7 +284,11 @@ pub fn execute(
     println!("{}", "========================================".cyan());
     println!(
         "{}",
-        format!(" Scan complete in {:.2}s.", started_at.elapsed().as_secs_f32()).cyan()
+        format!(
+            " Scan complete in {:.2}s.",
+            started_at.elapsed().as_secs_f32()
+        )
+        .cyan()
     );
 
     Ok(())
@@ -307,7 +316,10 @@ mod tests {
 
     #[test]
     fn list_and_range_mixed() {
-        assert_eq!(parse_ports("22, 80, 100-102"), Ok(vec![22, 80, 100, 101, 102]));
+        assert_eq!(
+            parse_ports("22, 80, 100-102"),
+            Ok(vec![22, 80, 100, 101, 102])
+        );
     }
 
     #[test]
@@ -338,14 +350,20 @@ mod tests {
             resolve_target("127.0.0.1", false),
             Ok(IpAddr::V4(Ipv4Addr::LOCALHOST))
         );
-        assert_eq!(resolve_target("::1", true), Ok(IpAddr::V6("::1".parse().unwrap())));
+        assert_eq!(
+            resolve_target("::1", true),
+            Ok(IpAddr::V6("::1".parse().unwrap()))
+        );
         assert!(resolve_target("not_a_host", false).is_err());
     }
 
     #[test]
     fn banners_are_sanitized() {
         // Stops at the first control character (the newline here).
-        assert_eq!(sanitize_banner(b"SSH-2.0-OpenSSH_9.6\r\n"), "SSH-2.0-OpenSSH_9.6");
+        assert_eq!(
+            sanitize_banner(b"SSH-2.0-OpenSSH_9.6\r\n"),
+            "SSH-2.0-OpenSSH_9.6"
+        );
         // Binary garbage becomes an empty string.
         assert_eq!(sanitize_banner(&[0x01, 0x02, 0x03]), "");
         // Long banners are capped.
@@ -373,8 +391,14 @@ mod tests {
         );
 
         let open: Vec<u16> = results.iter().map(|(port, _)| *port).collect();
-        assert!(open.contains(&open_port), "the listening port must be found open");
-        assert!(!open.contains(&closed_port), "the released port must be closed");
+        assert!(
+            open.contains(&open_port),
+            "the listening port must be found open"
+        );
+        assert!(
+            !open.contains(&closed_port),
+            "the released port must be closed"
+        );
     }
 
     #[test]

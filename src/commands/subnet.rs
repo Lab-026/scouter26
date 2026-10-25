@@ -151,7 +151,7 @@ pub fn normalize_cidr(input: &str) -> String {
 
 /// Insert commas every three digits from the right, so "18446744073709551616"
 /// becomes "18,446,744,073,709,551,616". Counts like 2^96 are unreadable raw.
-fn group_digits(digits: &str) -> String {
+pub(crate) fn group_digits(digits: &str) -> String {
     let mut out = Vec::new();
     for (i, ch) in digits.chars().rev().enumerate() {
         if i > 0 && i % 3 == 0 {
@@ -198,10 +198,22 @@ fn print_v4_report(net: Ipv4Net) {
     println!(" {:<14}: /{}", "Prefix", prefix);
     println!(" {:<14}: {}", "Netmask", net.netmask());
     println!(" {:<14}: {}", "Wildcard", wildcard_mask(prefix));
-    println!(" {:<14}: {}", "Network ID", net.network().to_string().green());
-    println!(" {:<14}: {}", "Broadcast", net.broadcast().to_string().yellow());
+    println!(
+        " {:<14}: {}",
+        "Network ID",
+        net.network().to_string().green()
+    );
+    println!(
+        " {:<14}: {}",
+        "Broadcast",
+        net.broadcast().to_string().yellow()
+    );
     println!(" {:<14}: {}", "Host Range", host_range(net));
-    println!(" {:<14}: {}", "Total IPs", group_digits(&total_addresses(prefix).to_string()));
+    println!(
+        " {:<14}: {}",
+        "Total IPs",
+        group_digits(&total_addresses(prefix).to_string())
+    );
     println!(
         " {:<14}: {}",
         "Usable Hosts",
@@ -220,7 +232,11 @@ fn print_v6_report(net: Ipv6Net) {
     println!("{}", "========================================".cyan());
     println!(" {:<17}: {}", "Input IP", addr);
     println!(" {:<17}: /{}", "Prefix", prefix);
-    println!(" {:<17}: {}", "Network ID", net.network().to_string().green());
+    println!(
+        " {:<17}: {}",
+        "Network ID",
+        net.network().to_string().green()
+    );
     println!(" {:<17}: {}", "Host Range", host_range6(net));
     println!(" {:<17}: {}", "Total Addresses", total_addresses6(prefix));
     println!(
@@ -285,12 +301,24 @@ mod tests {
 
     #[test]
     fn address_types() {
-        assert_eq!(address_type(Ipv4Addr::new(192, 168, 1, 1)), "Private (RFC 1918)");
-        assert_eq!(address_type(Ipv4Addr::new(10, 0, 0, 1)), "Private (RFC 1918)");
-        assert_eq!(address_type(Ipv4Addr::new(172, 16, 5, 5)), "Private (RFC 1918)");
+        assert_eq!(
+            address_type(Ipv4Addr::new(192, 168, 1, 1)),
+            "Private (RFC 1918)"
+        );
+        assert_eq!(
+            address_type(Ipv4Addr::new(10, 0, 0, 1)),
+            "Private (RFC 1918)"
+        );
+        assert_eq!(
+            address_type(Ipv4Addr::new(172, 16, 5, 5)),
+            "Private (RFC 1918)"
+        );
         assert_eq!(address_type(Ipv4Addr::new(8, 8, 8, 8)), "Public");
         assert_eq!(address_type(Ipv4Addr::new(1, 1, 1, 1)), "Public");
-        assert_eq!(address_type(Ipv4Addr::new(127, 0, 0, 1)), "Loopback (127.0.0.0/8)");
+        assert_eq!(
+            address_type(Ipv4Addr::new(127, 0, 0, 1)),
+            "Loopback (127.0.0.0/8)"
+        );
         assert_eq!(
             address_type(Ipv4Addr::new(169, 254, 1, 1)),
             "Link-local (APIPA, 169.254.0.0/16)"
@@ -323,7 +351,10 @@ mod tests {
         assert_eq!(total_addresses6(126), "4");
         assert_eq!(total_addresses6(64), "18,446,744,073,709,551,616");
         // /0 is 2^128: one more than u128 can even hold.
-        assert_eq!(total_addresses6(0), "340,282,366,920,938,463,463,374,607,431,768,211,456");
+        assert_eq!(
+            total_addresses6(0),
+            "340,282,366,920,938,463,463,374,607,431,768,211,456"
+        );
     }
 
     #[test]
@@ -378,6 +409,9 @@ mod tests {
     fn digits_are_grouped_in_threes() {
         assert_eq!(group_digits("1"), "1");
         assert_eq!(group_digits("654321"), "654,321");
-        assert_eq!(group_digits("18446744073709551616"), "18,446,744,073,709,551,616");
+        assert_eq!(
+            group_digits("18446744073709551616"),
+            "18,446,744,073,709,551,616"
+        );
     }
 }

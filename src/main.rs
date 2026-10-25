@@ -6,6 +6,14 @@ use cli::{Cli, Commands};
 use colored::Colorize;
 
 fn main() {
+    // Unix CLI convention: when whoever reads our stdout goes away
+    // (e.g. `scouter26 subnet ... | head`), die quietly on SIGPIPE like
+    // every classic tool. Rust ignores SIGPIPE by default, which makes
+    // println! panic with "Broken pipe" instead — restore the default.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     // Each command does its own work and reports failures as Err instead

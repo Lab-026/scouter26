@@ -274,11 +274,7 @@ impl RawSocket {
                 &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
                 &mut addr_len,
             );
-            if n <= 0 {
-                None
-            } else {
-                Some(n as usize)
-            }
+            if n <= 0 { None } else { Some(n as usize) }
         }
     }
 
@@ -374,7 +370,7 @@ pub fn execute(
             return Err(format!(
                 "'{}' is an IPv6 target and SYN scanning is IPv4-only for now",
                 target
-            ))
+            ));
         }
     };
 
@@ -473,14 +469,20 @@ pub fn execute(
     thread::sleep(window / 2);
     let silent: Vec<u16> = {
         let map = verdicts.lock().unwrap_or_else(unlock);
-        ports.iter().filter(|p| !map.contains_key(p)).copied().collect()
+        ports
+            .iter()
+            .filter(|p| !map.contains_key(p))
+            .copied()
+            .collect()
     };
     for port in silent {
         send_syn(port);
     }
     thread::sleep(window / 2 + Duration::from_millis(250));
 
-    reader.join().map_err(|_| "reader thread crashed".to_string())?;
+    reader
+        .join()
+        .map_err(|_| "reader thread crashed".to_string())?;
 
     if send_errors.load(Ordering::Relaxed) > 0 {
         eprintln!(
@@ -611,7 +613,9 @@ mod tests {
         assert_eq!(packet[9], 6, "protocol TCP");
         assert_eq!(packet[33], TCP_SYN);
         // A SYN (no ACK) is our own outgoing packet, not a verdict.
-        assert!(parse_reply(&packet, 40000, Ipv4Addr::new(192, 0, 2, 1), &HashSet::new()).is_none());
+        assert!(
+            parse_reply(&packet, 40000, Ipv4Addr::new(192, 0, 2, 1), &HashSet::new()).is_none()
+        );
     }
 
     #[test]

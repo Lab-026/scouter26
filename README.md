@@ -211,6 +211,20 @@ cargo build --release
 cargo test
 ```
 
+## How it's built
+
+- **No packet libraries.** Every DNS, NTP and SNMP payload and every raw
+  SYN packet — checksums included — is hand-built byte by byte in this
+  repository, and certified against external reference vectors in tests.
+- **Pure cores, tested edges.** Calculation functions are separated from
+  I/O and unit-tested; the network paths get integration tests against
+  real listeners on the loopback.
+- **One engine.** All scanning commands share the same worker-pool
+  design, tunables validation, and progress reporting.
+- **Quality is enforced, not aspirational.** CI runs `cargo test`,
+  `cargo clippy -- -D warnings`, and `cargo fmt --check` on every push.
+- Every change is recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
