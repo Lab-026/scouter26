@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use super::ports;
 use super::scan::DEFAULT_PORTS;
-use super::{parse_ports, resolve_target, unlock};
+use super::{internet_checksum, parse_ports, resolve_target, unlock};
 
 const TCP_SYN: u8 = 0x02;
 const TCP_RST: u8 = 0x04;
@@ -29,26 +29,8 @@ const TCP_ACK: u8 = 0x10;
 // Packet surgery.
 // ============================================================
 
-/// The Internet checksum (RFC 1071): sum every 16-bit word, fold the
-/// carries back in until nothing overflows, then invert. Every IP and
-/// TCP header carries one; a receiver that sums the whole header with
-/// the checksum included must arrive at all-ones.
-fn internet_checksum(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    // as_chunks hands us the data as &[u8; 2] words plus the odd tail.
-    let (words, remainder) = data.as_chunks::<2>();
-    for word in words {
-        sum += u16::from_be_bytes(*word) as u32;
-    }
-    // An odd trailing byte counts as a high-order byte (padded with zero).
-    if let [odd] = remainder {
-        sum += (*odd as u32) << 8;
-    }
-    while sum >> 16 != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    !(sum as u16)
-}
+// (internet_checksum lives in commands/mod.rs — the ping command's ICMP
+// headers need the exact same math.)
 
 /// Build one complete 40-byte IPv4+TCP packet with the given TCP flags.
 ///

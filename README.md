@@ -17,6 +17,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 discover <cidr>`  | Find live hosts in a subnet              |
 | `scouter26 udp <target>`     | Probe UDP services (DNS, NTP, SNMP, ...) |
 | `scouter26 syn <target>`     | Half-open SYN scan (needs root, IPv4)    |
+| `scouter26 ping <target>`    | ICMP ping with TCP fallback              |
 
 ## subnet
 
@@ -252,6 +253,30 @@ binstall scouter26` already works with the release tarballs)
 > [packaging/README.md](packaging/README.md). Today's packages install
 > directly from GitHub Releases. There is deliberately no Flatpak: see the
 > reasoning in [packaging/README.md](packaging/README.md).
+
+## ping
+
+The question IT Support asks fifty times a day: *"is it even up?"* Sends
+real ICMP echo requests — unprivileged, thanks to Linux ping sockets —
+and reports latency, loss, and min/avg/max. When ICMP is unavailable
+(other systems, or IPv6 targets for now), it falls back to a TCP probe
+against `--port` (default 443) and says so in every line:
+
+```text
+$ scouter26 ping 192.168.1.1
+
+ reply from 192.168.1.1: seq=1 time=1.24 ms
+ reply from 192.168.1.1: seq=2 time=1.19 ms
+ reply from 192.168.1.1: seq=3 time=1.21 ms
+ reply from 192.168.1.1: seq=4 time=1.20 ms
+----------------------------------------
+ 4 probes sent, 4 received, 0.0% packet loss
+ rtt min/avg/max: 1.19/1.21/1.24 ms (icmp)
+```
+
+`--count`, `--interval`, `--timeout`, `--port`, `--json` and `--output`
+work as elsewhere. A refused TCP port still counts as "up": a machine
+that refuses is a machine that is on.
 
 ## Shell completions
 

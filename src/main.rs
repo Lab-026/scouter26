@@ -33,6 +33,18 @@ fn main() {
     let (result, json_mode) = match &cli.command {
         Commands::Subnet { cidr } => (commands::subnet::execute(cidr), false),
         Commands::Ports { query } => (commands::ports::execute(query), false),
+        Commands::Ping {
+            target,
+            count,
+            interval,
+            timeout,
+            port,
+            json,
+            output,
+        } => (
+            commands::ping::execute(target, *count, *interval, *timeout, *port, *json, output),
+            *json,
+        ),
         Commands::Scan {
             target,
             ports,

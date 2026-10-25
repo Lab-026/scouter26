@@ -1,6 +1,7 @@
 //! Shared helpers used by more than one scouter26 command.
 
 pub mod discover;
+pub mod ping;
 pub mod ports;
 pub mod scan;
 pub mod subnet;
@@ -59,6 +60,28 @@ pub(crate) fn write_report(
         .map_err(|error| format!("could not serialize the report: {}", error))?;
     std::fs::write(path, json + "\n")
         .map_err(|error| format!("could not write '{}': {}", path.display(), error))
+}
+
+/// The Internet checksum (RFC 1071): sum every 16-bit word, fold the
+/// carries back in until nothing overflows, then invert. Every IP, TCP
+/// and ICMP header carries one; a receiver that sums the whole header
+/// with the checksum included must arrive at all-ones. (Used by the SYN
+/// scanner's TCP headers and ping's ICMP headers alike.)
+pub(crate) fn internet_checksum(data: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    // as_chunks hands us the data as &[u8; 2] words plus the odd tail.
+    let (words, remainder) = data.as_chunks::<2>();
+    for word in words {
+        sum += u16::from_be_bytes(*word) as u32;
+    }
+    // An odd trailing byte counts as a high-order byte (padded with zero).
+    if let [odd] = remainder {
+        sum += (*odd as u32) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// A lock() only fails when a thread panicked while holding it

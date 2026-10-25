@@ -51,6 +51,21 @@ to raw packet surgery — with every phase verified against live networks
 - Worked examples at the bottom of `--help`, so the tool teaches itself
   before the README is ever opened.
 
+## [1.2.0] - 2026-10-25
+
+### Added
+- `ping` command: the daily-driver diagnostic. Real ICMP echo via Linux
+  ping sockets (unprivileged on Fedora-family), with an honest TCP
+  fallback (port refused still means "up") for systems without them.
+  Latency, loss and min/avg/max statistics; `--count/--interval/
+  --timeout/--port/--json/--output`.
+- `internet_checksum` is now shared between the SYN and ping engines.
+
+### Changed
+- First command of the "true toolbox" realignment: the goal is now the
+  commands IT Support runs every day (ping, dns, trace), alongside the
+  scanners.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

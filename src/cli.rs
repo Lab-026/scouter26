@@ -35,6 +35,29 @@ pub enum Commands {
         /// The port number (e.g., 80) or protocol name (e.g., http)
         query: String,
     },
+    /// Is this host up? ICMP echo, with a TCP fallback (no root needed)
+    Ping {
+        /// The IP address or hostname to ping (e.g., 192.168.1.1)
+        target: String,
+        /// How many probes to send (1-100). Default: 4.
+        #[arg(short, long, default_value_t = 4)]
+        count: usize,
+        /// Seconds between probes
+        #[arg(short, long, default_value_t = 1.0)]
+        interval: f64,
+        /// Seconds to wait for each reply
+        #[arg(long, default_value_t = 2.0)]
+        timeout: f64,
+        /// TCP fallback port when ICMP is unavailable
+        #[arg(long, default_value_t = 443)]
+        port: u16,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Scan a target host for open TCP ports
     Scan {
         /// The IP address or hostname to scan (e.g., 192.168.1.1)
