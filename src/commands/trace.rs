@@ -1,73 +1,32 @@
 //! The `trace` command — "where does the path die?"
 //!
-//! Classic traceroute, built by hand: echo requests whose IP time-to-live
-//! climbs one hop at a time. Every router along the way decrements the
-//! TTL, and the one that drops it to zero must answer with ICMP "Time
-//! Exceeded" — betraying its address. The destination itself answers with
-//! a normal Echo Reply, which ends the trace.
+//! Classic traceroute: echo probes whose IP time-to-live climbs one hop
+//! at a time. Every router along the way decrements the TTL, and the one
+//! that drops it to zero must answer with ICMP "Time Exceeded" —
+//! betraying its address. The destination itself answers with a normal
+//! Echo Reply, which ends the trace.
 //!
-//! Like the SYN scanner, this forges raw packets (the TTL field cannot be
-//! set from userspace), so it needs root and speaks IPv4 only.
+//! The probes are hand-built ICMP echo messages; the kernel wraps them in
+//! a proper IP header whose TTL we set per hop through the IP_TTL socket
+//! option (the one thing userspace cannot normally touch, which is why
+//! this command needs root). Replies arrive on a raw ICMP capture socket
+//! with their IP headers intact, and are classified by hand: identifier +
+//! sequence still survive inside Time Exceeded messages even though the
+//! payload does not.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use colored::*;
 
-use super::local_source_ip;
-use super::resolve_target;
-use super::{RawSocket, unlock};
+use super::ping::build_echo_request;
+use super::{RawSocket, local_source_ip, resolve_target};
 
 const ICMP_ECHO_REQUEST: u8 = 8;
-
-/// Build one complete IPv4+ICMP packet: the same hand-forgery as the SYN
-/// scanner's TCP packets, but carrying an echo header instead — and with
-/// a TTL we control, which is the entire trick behind traceroute.
-// Eight parameters is the shape of the thing: an IP+ICMP header has
-// exactly these knobs, and no struct would make the call sites clearer.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_icmp4_echo(
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    ttl: u8,
-    identifier: u16,
-    seq: u16,
-    payload: &[u8],
-    ip_id: u16,
-    icmp_type: u8,
-) -> Vec<u8> {
-    let icmp_len = 8 + payload.len();
-    let total_len = 20 + icmp_len;
-    let mut packet = vec![0u8; total_len];
-
-    // --- IPv4 header ---
-    packet[0] = 0x45; // version 4, no options
-    packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    packet[4..6].copy_from_slice(&ip_id.to_be_bytes());
-    packet[6..8].copy_from_slice(&0x4000u16.to_be_bytes()); // Don't Fragment
-    packet[8] = ttl; // ← the hop counter, the whole point of the command
-    packet[9] = 1; // protocol: ICMP
-    packet[12..16].copy_from_slice(&src_ip.octets());
-    packet[16..20].copy_from_slice(&dst_ip.octets());
-    let ip_checksum = super::internet_checksum(&packet[..20]);
-    packet[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
-
-    // --- ICMP header + payload (checksummed on their own, no pseudo-header)
-    let icmp = &mut packet[20..];
-    icmp[0] = icmp_type;
-    icmp[1] = 0; // code
-    icmp[4..6].copy_from_slice(&identifier.to_be_bytes());
-    icmp[6..8].copy_from_slice(&seq.to_be_bytes());
-    icmp[8..].copy_from_slice(payload);
-    let icmp_checksum = super::internet_checksum(icmp);
-    icmp[2..4].copy_from_slice(&icmp_checksum.to_be_bytes());
-
-    packet
-}
+const ICMP_ECHO_REPLY: u8 = 0;
 
 /// What an incoming ICMP datagram means for our trace. Replies are
 /// matched to our probes by identifier + sequence — the payload does not
@@ -100,7 +59,7 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], our_id: u16) -> Option<Trace
     }
 
     match icmp[0] {
-        0 => {
+        ICMP_ECHO_REPLY => {
             // Echo Reply — the destination itself answered our last probe.
             let id = u16::from_be_bytes([icmp[4], icmp[5]]);
             let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
@@ -184,21 +143,26 @@ pub fn execute(
         }
     };
 
-    let socket = RawSocket::new().map_err(|error| {
+    // One socket, two duties: it sends the probes (with a per-hop TTL set
+    // through IP_TTL) and it hears every ICMP datagram that comes back.
+    // Both halves need root, because raw sockets are how userspace touches
+    // the TTL knob at all.
+    let socket = RawSocket::icmp_capture().map_err(|error| {
         if error.raw_os_error() == Some(libc::EPERM) {
-            "Traceroute forges raw packets, which the kernel only allows to root.\n\
+            "Traceroute touches the IP time-to-live knob, which the kernel only \
+             allows to root.\n\
              Run it with:  sudo scouter26 trace <target>\n\
-             (scouter26's ping, scan, discover, udp, subnet and ports commands never need root.)"
+             (scouter26's ping, dns, scan, discover, udp, subnet and ports \
+             commands never need root.)"
                 .to_string()
         } else {
-            format!("could not open a raw socket: {}", error)
+            format!("could not open a raw ICMP socket: {}", error)
         }
     })?;
 
     let src_ip = local_source_ip(target_ip)?;
     let identifier = 0x1964u16;
-    let payload = [0u8; 16];
-    let sent_times: Arc<Mutex<HashMap<u16, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+    let payload = *b"SCOUTER26-TRACE\x00"; // visible in Wireshark, 16 bytes
 
     if !json {
         println!("{}", "========================================".cyan());
@@ -219,65 +183,47 @@ pub fn execute(
 
     let mut hops: Vec<TraceHop> = Vec::new();
     let mut reached = false;
+    let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
     for ttl in 1..=max_hops {
         let seq = ttl as u16;
-        let packet = build_icmp4_echo(
-            src_ip,
-            target_ip,
-            ttl,
-            identifier,
-            seq,
-            &payload,
-            0x1964 + ttl as u16,
-            ICMP_ECHO_REQUEST,
-        );
+        let echo = build_echo_request(identifier, seq, &payload);
         socket
-            .send(&packet, target_ip)
+            .set_ttl(ttl)
+            .map_err(|error| format!("could not set TTL {}: {}", ttl, error))?;
+        socket
+            .send(&echo, target_ip)
             .map_err(|error| format!("could not send probe {}/{}: {}", ttl, max_hops, error))?;
-        sent_times
-            .lock()
-            .unwrap_or_else(unlock)
-            .insert(seq, Instant::now());
+        sent_times.insert(seq, Instant::now());
 
         // Wait for THIS probe's answer, ignoring everyone else's traffic.
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
         let mut outcome: Option<TraceEvent> = None;
         let mut buf = [0u8; 2048];
-        loop {
-            let remaining = deadline.checked_duration_since(Instant::now());
-            let Some(remaining) = remaining else { break };
+        while outcome.is_none()
+            && let Some(remaining) = deadline.checked_duration_since(Instant::now())
+        {
             socket.set_read_timeout(remaining);
-            match socket.recv(&mut buf) {
-                Some(n) => match classify_trace_reply(&buf[..n], identifier) {
-                    Some(event @ TraceEvent::Router(_, s)) if s == seq => {
-                        outcome = Some(event);
-                        break;
-                    }
-                    Some(event @ TraceEvent::Destination(s)) if s == seq => {
-                        outcome = Some(event);
-                        break;
-                    }
-                    _ => continue, // somebody else's ICMP — ignore it
-                },
-                None => break, // timeout slice elapsed: no answer for this hop
+            let Some(n) = socket.recv(&mut buf) else {
+                break; // timeout slice elapsed: no answer for this hop
+            };
+            let event = classify_trace_reply(&buf[..n], identifier);
+            let ours = event.as_ref().is_some_and(|event| match event {
+                TraceEvent::Router(_, s) | TraceEvent::Destination(s) => *s == seq,
+            });
+            if ours {
+                outcome = event;
             }
+            // Somebody else's ICMP — ignore it and keep listening.
         }
 
-        let rtt = |seq: u16| -> Option<f64> {
-            sent_times
-                .lock()
-                .unwrap_or_else(unlock)
-                .get(&seq)?
-                .elapsed()
-                .as_secs_f64()
-                .mul_add(1000.0, 0.0)
-                .into()
-        };
+        let rtt_ms = sent_times
+            .get(&seq)
+            .map(|sent| sent.elapsed().as_secs_f64() * 1000.0);
 
         match outcome {
             Some(TraceEvent::Router(router_ip, _)) => {
-                let ms = rtt(seq).unwrap_or(0.0);
+                let ms = rtt_ms.unwrap_or(0.0);
                 hops.push(TraceHop {
                     ttl,
                     ip: Some(router_ip.to_string()),
@@ -294,7 +240,7 @@ pub fn execute(
                 }
             }
             Some(TraceEvent::Destination(_)) => {
-                let ms = rtt(seq).unwrap_or(0.0);
+                let ms = rtt_ms.unwrap_or(0.0);
                 hops.push(TraceHop {
                     ttl,
                     ip: Some(target_ip.to_string()),
@@ -383,50 +329,23 @@ pub fn execute(
 mod tests {
     use super::*;
 
-    #[test]
-    fn icmp_packets_carry_their_ttl_and_valid_checksums() {
-        let packet = build_icmp4_echo(
-            Ipv4Addr::new(192, 168, 18, 29),
-            Ipv4Addr::new(1, 1, 1, 1),
-            7, // TTL
-            0x1964,
-            7,
-            &[0u8; 16],
-            0x1971,
-            ICMP_ECHO_REQUEST,
-        );
-        assert_eq!(packet[8], 7, "the TTL byte is the whole point");
-        assert_eq!(packet[9], 1, "protocol: ICMP");
-        assert_eq!(packet[20], 8, "ICMP type: echo request");
-        // RFC property: the IP header including its checksum sums to 0xFFFF.
-        let mut sum = 0u32;
-        for word in packet[..20].as_chunks::<2>().0 {
-            sum += u16::from_be_bytes(*word) as u32;
-        }
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-        assert_eq!(sum, 0xFFFF, "IP checksum must be self-verifying");
+    /// Assemble a full ICMP datagram the way the kernel delivers it to a
+    /// raw socket: IP header first, then the ICMP message.
+    fn datagram(source: [u8; 4], icmp_type: u8, identifier: u16, seq: u16) -> Vec<u8> {
+        let mut datagram = vec![0u8; 20 + 8];
+        datagram[0] = 0x45; // IPv4, no options
+        datagram[9] = 1; // protocol: ICMP
+        datagram[12..16].copy_from_slice(&source);
+        datagram[20] = icmp_type;
+        datagram[24..26].copy_from_slice(&identifier.to_be_bytes());
+        datagram[26..28].copy_from_slice(&seq.to_be_bytes());
+        datagram
     }
 
     #[test]
     fn echo_replies_classify_as_the_destination() {
-        // Build what the destination sends back: our own echo packet with
-        // the type flipped from request (8) to reply (0).
-        let request = build_icmp4_echo(
-            Ipv4Addr::new(1, 1, 1, 1),
-            Ipv4Addr::new(192, 168, 18, 29),
-            64,
-            0x1964,
-            5,
-            &[0u8; 16],
-            0x1971,
-            ICMP_ECHO_REQUEST,
-        );
-        let mut reply = request;
-        reply[20] = 0; // ICMP type: echo reply
-
-        match classify_trace_reply(&reply, 0x1964) {
+        let datagram = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
+        match classify_trace_reply(&datagram, 0x1964) {
             Some(TraceEvent::Destination(5)) => {}
             other => panic!("expected Destination(5), got {:?}", other),
         }
@@ -434,31 +353,22 @@ mod tests {
 
     #[test]
     fn time_exceeded_classifies_as_a_router() {
-        // The router sends back: outer IP (from the router) + ICMP type 11
-        // + our original IP header + our original ICMP header (8 bytes).
-        let original = build_icmp4_echo(
-            Ipv4Addr::new(192, 168, 18, 29),
-            Ipv4Addr::new(1, 1, 1, 1),
-            3, // the TTL that died here
-            0x1964,
-            3,
-            &[0u8; 16],
-            0x1971,
-            ICMP_ECHO_REQUEST,
-        );
-
-        let router_ip = [198, 51, 100, 7];
+        // A Time Exceeded carries: outer IP (from the router) + ICMP type
+        // 11 + the original IP header + the first 8 bytes of our original
+        // ICMP header. Only the identifier and sequence survive the trip —
+        // that is what we match on.
+        let original = build_echo_request(0x1964, 3, &[0u8; 16]);
         let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
-        // Outer IP header: from the router, protocol ICMP
         datagram[0] = 0x45;
         datagram[9] = 1;
-        datagram[12..16].copy_from_slice(&router_ip);
-        // Outer ICMP: Time Exceeded
-        let icmp = &mut datagram[20..];
-        icmp[0] = 11;
-        // Embedded original: full IP header + first 8 bytes of the ICMP
-        let embedded = &mut datagram[28..];
-        embedded.copy_from_slice(&original[..28]);
+        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]); // the router
+        datagram[20] = 11; // ICMP: Time Exceeded
+        // Embedded original IP header (20 bytes) + our ICMP header (8)
+        let embedded_ip = &mut datagram[28..48];
+        embedded_ip[0] = 0x45;
+        embedded_ip[9] = 1; // the original packet was ICMP too
+        let embedded_icmp = &mut datagram[48..56];
+        embedded_icmp.copy_from_slice(&original[..8]);
 
         match classify_trace_reply(&datagram, 0x1964) {
             Some(TraceEvent::Router(ip, 3)) => {
@@ -470,29 +380,21 @@ mod tests {
 
     #[test]
     fn other_peoples_icmp_is_ignored() {
-        let original = build_icmp4_echo(
-            Ipv4Addr::new(192, 168, 18, 29),
-            Ipv4Addr::new(1, 1, 1, 1),
-            3,
-            0x1964,
-            3,
-            &[0u8; 16],
-            0x1971,
-            ICMP_ECHO_REQUEST,
-        );
-        let mut datagram = vec![0u8; 20 + 8 + 28];
-        datagram[0] = 0x45;
-        datagram[9] = 1;
-        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]);
-        datagram[20] = 11;
-        datagram[28..].copy_from_slice(&original[..28]);
+        let wrong_id = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0xBEEF, 5);
+        assert!(classify_trace_reply(&wrong_id, 0x1964).is_none());
 
-        // Wrong identifier: none of our business.
-        assert!(classify_trace_reply(&datagram, 0xBEEF).is_none());
-        // Not ICMP at all: ignored.
-        let mut tcpish = datagram.clone();
-        tcpish[9] = 6;
-        assert!(classify_trace_reply(&tcpish, 0x1964).is_none());
+        let mut not_icmp = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
+        not_icmp[9] = 6; // protocol: TCP — not our kind of mail
+        assert!(classify_trace_reply(&not_icmp, 0x1964).is_none());
+
+        // A Time Exceeded whose embedded packet is not an echo request.
+        let mut strange = vec![0u8; 20 + 8 + 20 + 8];
+        strange[0] = 0x45;
+        strange[9] = 1;
+        strange[12..16].copy_from_slice(&[198, 51, 100, 7]);
+        strange[20] = 11;
+        strange[48] = 13; // embedded type: not an echo request
+        assert!(classify_trace_reply(&strange, 0x1964).is_none());
     }
 
     #[test]

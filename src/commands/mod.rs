@@ -255,6 +255,42 @@ impl RawSocket {
     /// read while others send. The returned wrapper owns (and closes)
     /// its duplicated descriptor; socket options carry over, because dup
     /// shares the underlying socket.
+    /// An ICMP *listening* socket: SOCK_RAW + IPPROTO_ICMP, without
+    /// IP_HDRINCL. This one is for receiving — every ICMP datagram that
+    /// arrives at this machine (echo replies, Time Exceeded, ...) is
+    /// delivered here with its IP header intact, which is exactly what
+    /// traceroute needs to hear.
+    pub(crate) fn icmp_capture() -> Result<Self, io::Error> {
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(RawSocket { fd })
+        }
+    }
+
+    /// Set the time-to-live for future sends on this socket — the knob
+    /// traceroute turns once per hop. (Kernel-managed IP headers only;
+    /// a hand-forged header carries its own TTL.)
+    pub(crate) fn set_ttl(&self, ttl: u8) -> Result<(), io::Error> {
+        let ttl = ttl as libc::c_int;
+        unsafe {
+            if libc::setsockopt(
+                self.fd,
+                libc::IPPROTO_IP,
+                libc::IP_TTL,
+                &ttl as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+            {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn dup_for_reading(&self) -> RawSocket {
         RawSocket {
             fd: unsafe { libc::dup(self.fd) },

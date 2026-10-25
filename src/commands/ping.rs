@@ -37,7 +37,7 @@ fn now_micros() -> u64 {
 
 /// Build an ICMP echo request: 8-byte header (type, code, checksum,
 /// identifier, sequence) plus our payload. Type 8 = "echo me".
-fn build_echo_request(identifier: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn build_echo_request(identifier: u16, seq: u16, payload: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(8 + payload.len());
     packet.push(8); // type: echo request
     packet.push(0); // code
