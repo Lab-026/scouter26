@@ -4,6 +4,42 @@ All notable changes to scouter26 are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project sticks to
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-10-25
+
+### The stability promise
+
+Version 1.0.0 declares the tool's interface stable: the six commands
+(`subnet`, `ports`, `scan`, `discover`, `udp`, `syn`), their flags, their
+human and JSON output, and their exit codes. From here on, changes land
+additively; anything that breaks compatibility requires — and will
+honestly carry — a 2.0.0.
+
+### What 1.0.0 is
+
+- **subnet** — full IPv4 and IPv6 breakdowns: netmask, wildcard, ranges,
+  counts, address classes and kinds, digit-grouped numbers
+- **ports** — a 31-service reference table, lookup by number or name,
+  suggestions, script-friendly exit codes
+- **scan** — parallel TCP connect scanning, IPv4 & IPv6, tunable
+  `--ports/--timeout/--workers/--ipv6`, live progress, banner grabbing,
+  `--json`
+- **discover** — subnet-wide host discovery where a refusal counts as
+  proof of life, capped sweeps, `--json`
+- **udp** — service probing with open/closed/open|filtered verdicts and
+  hand-built DNS, NTP and SNMP payloads
+- **syn** — half-open scanning with raw packets forged byte by byte
+  (checksums certified against a reference vector), reader-thread design
+
+48 tests (unit + integration against real listeners), rustfmt and clippy
+enforced in CI, a changelog, and packages for Debian, Fedora (including a
+COPR repository), Arch, and plain binaries on x86_64 and aarch64.
+
+### The road here
+
+Built across 17 phases in three days — from a first TCP connect scanner
+to raw packet surgery — with every phase verified against live networks
+(scanme.nmap.org, the author's own LAN) before it shipped.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added
