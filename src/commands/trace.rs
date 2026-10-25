@@ -42,6 +42,7 @@ pub(crate) enum TraceEvent {
 pub(crate) fn classify_trace_reply(
     datagram: &[u8],
     our_id: u16,
+    expected_source: Ipv4Addr,
     expected_destination: Ipv4Addr,
 ) -> Option<TraceEvent> {
     if datagram.len() < 28 {
@@ -80,8 +81,20 @@ pub(crate) fn classify_trace_reply(
             // Time Exceeded — a router dropped the packet. The message
             // embeds our original IP header + the first 8 bytes of our
             // original ICMP header, which is exactly where our
-            // identifier and sequence still live.
+            // identifier and sequence still live. Before trusting any of
+            // that, the embedded packet must prove it is *ours*: sane IPv4
+            // ICMP, sent from our address, to the destination we are
+            // tracing. A forged or unrelated Time Exceeded embeds a probe
+            // that was never ours, and fails here.
             if icmp.len() < 8 + 28 {
+                return None;
+            }
+            if icmp[8] >> 4 != 4 || (icmp[8] & 0x0F) < 5 || icmp[8 + 9] != 1 {
+                return None; // embedded packet is not a sane IPv4 ICMP probe
+            }
+            let inner_src = Ipv4Addr::new(icmp[8 + 12], icmp[8 + 13], icmp[8 + 14], icmp[8 + 15]);
+            let inner_dst = Ipv4Addr::new(icmp[8 + 16], icmp[8 + 17], icmp[8 + 18], icmp[8 + 19]);
+            if inner_src != expected_source || inner_dst != expected_destination {
                 return None;
             }
             let inner_header_words = (icmp[8] & 0x0F) as usize * 4;
@@ -214,7 +227,7 @@ pub fn execute(
             let Some(n) = socket.recv(&mut buf) else {
                 break; // timeout slice elapsed: no answer for this hop
             };
-            let event = classify_trace_reply(&buf[..n], identifier, target_ip);
+            let event = classify_trace_reply(&buf[..n], identifier, src_ip, target_ip);
             let ours = event.as_ref().is_some_and(|event| match event {
                 TraceEvent::Router(_, s) | TraceEvent::Destination(s) => *s == seq,
             });
@@ -349,10 +362,29 @@ mod tests {
         datagram
     }
 
+    /// Build a synthetic "our probe" as it would appear embedded inside a
+    /// Time Exceeded message: IP header (src to dst, protocol ICMP) plus
+    /// our echo request header.
+    fn build_our_probe(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
+        let echo = build_echo_request(0x1964, 3, &[0u8; 16]);
+        let mut packet = vec![0u8; 20 + echo.len()];
+        packet[0] = 0x45;
+        packet[9] = 1; // protocol: ICMP
+        packet[12..16].copy_from_slice(&src.octets());
+        packet[16..20].copy_from_slice(&dst.octets());
+        packet[20..].copy_from_slice(&echo);
+        packet
+    }
+
     #[test]
     fn echo_replies_classify_as_the_destination() {
         let datagram = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
-        match classify_trace_reply(&datagram, 0x1964, Ipv4Addr::new(1, 1, 1, 1)) {
+        match classify_trace_reply(
+            &datagram,
+            0x1964,
+            Ipv4Addr::new(192, 168, 18, 29),
+            Ipv4Addr::new(1, 1, 1, 1),
+        ) {
             Some(TraceEvent::Destination(5)) => {}
             other => panic!("expected Destination(5), got {:?}", other),
         }
@@ -374,10 +406,17 @@ mod tests {
         let embedded_ip = &mut datagram[28..48];
         embedded_ip[0] = 0x45;
         embedded_ip[9] = 1; // the original packet was ICMP too
+        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]); // our source
+        embedded_ip[16..20].copy_from_slice(&[1, 1, 1, 1]); // our target
         let embedded_icmp = &mut datagram[48..56];
         embedded_icmp.copy_from_slice(&original[..8]);
 
-        match classify_trace_reply(&datagram, 0x1964, Ipv4Addr::new(1, 1, 1, 1)) {
+        match classify_trace_reply(
+            &datagram,
+            0x1964,
+            Ipv4Addr::new(192, 168, 18, 29),
+            Ipv4Addr::new(1, 1, 1, 1),
+        ) {
             Some(TraceEvent::Router(ip, 3)) => {
                 assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
             }
@@ -388,11 +427,27 @@ mod tests {
     #[test]
     fn other_peoples_icmp_is_ignored() {
         let wrong_id = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0xBEEF, 5);
-        assert!(classify_trace_reply(&wrong_id, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+        assert!(
+            classify_trace_reply(
+                &wrong_id,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1)
+            )
+            .is_none()
+        );
 
         let mut not_icmp = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
         not_icmp[9] = 6; // protocol: TCP — not our kind of mail
-        assert!(classify_trace_reply(&not_icmp, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+        assert!(
+            classify_trace_reply(
+                &not_icmp,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1)
+            )
+            .is_none()
+        );
 
         // A Time Exceeded whose embedded packet is not an echo request.
         let mut strange = vec![0u8; 20 + 8 + 20 + 8];
@@ -401,7 +456,15 @@ mod tests {
         strange[12..16].copy_from_slice(&[198, 51, 100, 7]);
         strange[20] = 11;
         strange[48] = 13; // embedded type: not an echo request
-        assert!(classify_trace_reply(&strange, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+        assert!(
+            classify_trace_reply(
+                &strange,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1)
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -410,12 +473,56 @@ mod tests {
         // identifier and sequence are not enough — the reply must come
         // from the host we set out to reach.
         let impostor = datagram([203, 0, 113, 9], ICMP_ECHO_REPLY, 0x1964, 5);
-        assert!(classify_trace_reply(&impostor, 0x1964, Ipv4Addr::new(1, 1, 1, 1)).is_none());
+        assert!(
+            classify_trace_reply(
+                &impostor,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1)
+            )
+            .is_none()
+        );
 
         let genuine = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
         assert_eq!(
-            classify_trace_reply(&genuine, 0x1964, Ipv4Addr::new(1, 1, 1, 1)),
+            classify_trace_reply(
+                &genuine,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1)
+            ),
             Some(TraceEvent::Destination(5))
+        );
+    }
+
+    #[test]
+    fn a_time_exceeded_about_someone_elses_probe_is_ignored() {
+        // Regression for the Time Exceeded hardening: the embedded probe
+        // must be ours (our source) and aimed at our destination. A
+        // router's error about somebody else's traffic — or a forged one —
+        // embeds a probe that fails this check.
+        let original = build_our_probe(Ipv4Addr::new(192, 168, 18, 29), Ipv4Addr::new(8, 8, 8, 8));
+        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
+        datagram[0] = 0x45;
+        datagram[9] = 1;
+        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]); // the router
+        datagram[20] = 11;
+        let embedded_ip = &mut datagram[28..48];
+        embedded_ip[0] = 0x45;
+        embedded_ip[9] = 1;
+        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]); // our src
+        embedded_ip[16..20].copy_from_slice(&[8, 8, 8, 8]); // NOT our target
+        let embedded_icmp = &mut datagram[48..56];
+        embedded_icmp.copy_from_slice(&original[..8]);
+
+        assert!(
+            classify_trace_reply(
+                &datagram,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1),
+            )
+            .is_none()
         );
     }
 
