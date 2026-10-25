@@ -58,6 +58,23 @@ pub enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// DNS lookups: A, AAAA, MX, TXT, NS, PTR, CNAME or SOA
+    Dns {
+        /// The name to look up (e.g., github.com)
+        name: String,
+        /// Record type: A, AAAA, CNAME, MX, TXT, NS, PTR or SOA. Default: A.
+        #[arg(short = 't', long = "type")]
+        record_type: Option<String>,
+        /// DNS server to ask (default: your system's own resolver)
+        #[arg(long)]
+        server: Option<String>,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Scan a target host for open TCP ports
     Scan {
         /// The IP address or hostname to scan (e.g., 192.168.1.1)

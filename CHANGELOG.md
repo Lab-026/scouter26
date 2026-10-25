@@ -66,6 +66,16 @@ to raw packet surgery — with every phase verified against live networks
   commands IT Support runs every day (ping, dns, trace), alongside the
   scanners.
 
+## [1.3.0] - 2026-10-25
+
+### Added
+- `dns` command: full DNS lookups (A, AAAA, CNAME, MX, TXT, NS, PTR, SOA)
+  against the system resolver by default (`/etc/resolv.conf`) or any
+  server via `--server`. Queries are hand-built and responses — including
+  DNS name compression — are hand-parsed in this repository. NXDOMAIN and
+  other server errors become plain-language messages with proper exit
+  codes; `--json` and `--output` work as everywhere.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

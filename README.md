@@ -18,6 +18,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 udp <target>`     | Probe UDP services (DNS, NTP, SNMP, ...) |
 | `scouter26 syn <target>`     | Half-open SYN scan (needs root, IPv4)    |
 | `scouter26 ping <target>`    | ICMP ping with TCP fallback              |
+| `scouter26 dns <name>`       | DNS lookups: A, AAAA, MX, TXT, NS, ...   |
 
 ## subnet
 
@@ -277,6 +278,23 @@ $ scouter26 ping 192.168.1.1
 `--count`, `--interval`, `--timeout`, `--port`, `--json` and `--output`
 work as elsewhere. A refused TCP port still counts as "up": a machine
 that refuses is a machine that is on.
+
+## dns
+
+*"Why can't they reach mail.corp.local?"* — look up A, AAAA, MX, TXT, NS,
+PTR, CNAME and SOA records, asking your system's own resolver by default
+(the same one the user's machine uses — that matters when diagnosing):
+
+```text
+$ scouter26 dns github.com --type MX
+
+ MX      0 github-com.mail.protection.outlook.com           TTL 300
+```
+
+A nonexistent name gets a plain-language error (`NXDOMAIN: that name does
+not exist`), and `--server 1.1.1.1` asks a different resolver when you
+want to compare answers. Queries and responses — including DNS name
+compression — are parsed by hand in this repository.
 
 ## Shell completions
 

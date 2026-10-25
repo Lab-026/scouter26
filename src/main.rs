@@ -45,6 +45,16 @@ fn main() {
             commands::ping::execute(target, *count, *interval, *timeout, *port, *json, output),
             *json,
         ),
+        Commands::Dns {
+            name,
+            record_type,
+            server,
+            json,
+            output,
+        } => (
+            commands::dns::execute(name, record_type, server, *json, output),
+            *json,
+        ),
         Commands::Scan {
             target,
             ports,

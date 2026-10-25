@@ -1,6 +1,7 @@
 //! Shared helpers used by more than one scouter26 command.
 
 pub mod discover;
+pub mod dns;
 pub mod ping;
 pub mod ports;
 pub mod scan;
