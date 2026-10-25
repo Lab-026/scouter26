@@ -28,6 +28,13 @@ use super::{RawSocket, local_source_ip, resolve_target};
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
 
+/// Derive this process's ICMP identifier from its pid, so simultaneous
+/// traceroutes never share an identity. 0x1964 remains as the project's
+/// fingerprint; the pid supplies the variability.
+fn trace_identifier(pid: u32) -> u16 {
+    0x1964 ^ (pid as u16).rotate_left(9) ^ ((pid >> 16) as u16)
+}
+
 /// What an incoming ICMP datagram means for our trace. Replies are
 /// matched to our probes by identifier + sequence — the payload does not
 /// survive inside Time Exceeded messages, but those two fields do.
@@ -77,8 +84,15 @@ pub(crate) fn classify_trace_reply(
                 None
             }
         }
-        11 => {
-            // Time Exceeded — a router dropped the packet. The message
+        11 if icmp[1] == 0 => {
+            // Time Exceeded, code 0: TTL exceeded in transit — the
+            // traceroute signal. Code 1 (fragment reassembly time) cannot
+            // occur for our probes: they carry the Don't Fragment flag and
+            // are far smaller than any reassembly threshold, so we ignore
+            // anything else rather than guess about it.
+            // The message embeds our original IP header + the first 8 bytes
+            // of our original ICMP header, which is exactly where our
+            // identifier and sequence still live.
             // embeds our original IP header + the first 8 bytes of our
             // original ICMP header, which is exactly where our
             // identifier and sequence still live. Before trusting any of
@@ -181,7 +195,10 @@ pub fn execute(
     })?;
 
     let src_ip = local_source_ip(target_ip)?;
-    let identifier = 0x1964u16;
+    // A per-process identifier: two concurrent traces from this machine
+    // must never accept each other's replies. (The payload does not
+    // survive inside Time Exceeded messages, so this id is our identity.)
+    let identifier = trace_identifier(std::process::id());
     let payload = *b"SCOUTER26-TRACE\x00"; // visible in Wireshark, 16 bytes
 
     if !json {
@@ -512,6 +529,45 @@ mod tests {
         embedded_ip[9] = 1;
         embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]); // our src
         embedded_ip[16..20].copy_from_slice(&[8, 8, 8, 8]); // NOT our target
+        let embedded_icmp = &mut datagram[48..56];
+        embedded_icmp.copy_from_slice(&original[..8]);
+
+        assert!(
+            classify_trace_reply(
+                &datagram,
+                0x1964,
+                Ipv4Addr::new(192, 168, 18, 29),
+                Ipv4Addr::new(1, 1, 1, 1),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn identifiers_differ_between_processes() {
+        // Consecutive pids must never share an identity, or two concurrent
+        // traces could accept each other's replies.
+        let ids: std::collections::HashSet<u16> = (1u32..=100).map(trace_identifier).collect();
+        assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn fragment_reassembly_time_exceeded_is_not_a_hop() {
+        // Code 1 cannot be produced by our probes (they are single,
+        // Don't-Fragment fragments), so the classifier must not treat it
+        // as an ordinary router hop.
+        let original = build_our_probe(Ipv4Addr::new(192, 168, 18, 29), Ipv4Addr::new(1, 1, 1, 1));
+        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
+        datagram[0] = 0x45;
+        datagram[9] = 1;
+        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]);
+        datagram[20] = 11;
+        datagram[21] = 1; // code 1: fragment reassembly time exceeded
+        let embedded_ip = &mut datagram[28..48];
+        embedded_ip[0] = 0x45;
+        embedded_ip[9] = 1;
+        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]);
+        embedded_ip[16..20].copy_from_slice(&[1, 1, 1, 1]);
         let embedded_icmp = &mut datagram[48..56];
         embedded_icmp.copy_from_slice(&original[..8]);
 

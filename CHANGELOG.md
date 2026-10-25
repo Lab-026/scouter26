@@ -100,6 +100,24 @@ to raw packet surgery — with every phase verified against live networks
   section no longer calls the technique "stealth" — half-open is not
   invisible, and the text says so.
 
+## [1.4.3] - 2026-10-26
+
+### Fixed
+- **Release-process error**: the v1.4.2 tag shipped with a manifest that
+  still declared 1.4.1 (the version bump and changelog entry failed to land
+  because a commit was made despite failing local checks). The manifest now
+  matches the release, and a pre-commit hook runs the quality gates before
+  every commit so this class of mistake cannot repeat.
+
+### Hardened
+- **Traceroute identifier collisions**: the ICMP identifier is now derived
+  from the process id instead of the fixed 0x1964, so two concurrent traces
+  from the same machine cannot accept each other's replies.
+- **Time Exceeded code check**: only code 0 (TTL exceeded in transit) is
+  treated as a router hop; code 1 (fragment reassembly time) cannot occur
+  for our probes — they carry the Don't Fragment flag and are far smaller
+  than any fragment threshold — and is ignored rather than guessed about.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added
