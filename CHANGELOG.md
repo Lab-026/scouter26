@@ -40,6 +40,17 @@ Built across 17 phases in three days — from a first TCP connect scanner
 to raw packet surgery — with every phase verified against live networks
 (scanme.nmap.org, the author's own LAN) before it shipped.
 
+## [1.1.0] - 2026-10-25
+
+### Added
+- `--output FILE` on `scan`, `discover`, `udp` and `syn`: saves the exact
+  JSON report to a file while the screen keeps the human view (with
+  `--json`, stdout and the file carry the same report).
+- Hidden `completions` command generating tab-completion scripts for bash,
+  zsh, fish and PowerShell — with a test proving all four render.
+- Worked examples at the bottom of `--help`, so the tool teaches itself
+  before the README is ever opened.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

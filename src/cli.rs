@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Scouter26: a modular network toolbox for IT support and junior admins
 #[derive(Parser)]
@@ -7,6 +8,15 @@ use clap::{Parser, Subcommand};
 // so the version lives in exactly ONE place.
 #[command(version)]
 #[command(about = "A modular network toolbox", long_about = None)]
+// A few worked examples at the bottom of --help, so a new user can see
+// what the tool does without ever opening the README.
+#[command(after_help = "Examples:
+  scouter26 subnet 192.168.1.0/24
+  scouter26 ports 443
+  scouter26 scan scanme.nmap.org --ports 22,80,443
+  scouter26 discover 192.168.1.0/24
+  scouter26 udp 192.168.1.1
+  sudo scouter26 syn 192.168.1.1 --ports 22,80,443")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -45,6 +55,9 @@ pub enum Commands {
         /// Print results as JSON (stdout) instead of a human report
         #[arg(long)]
         json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
     /// Find live hosts in a subnet by probing common ports on every address
     Discover {
@@ -63,6 +76,9 @@ pub enum Commands {
         /// Print results as JSON (stdout) instead of a human report
         #[arg(long)]
         json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
     /// Probe UDP services on a host (DNS, NTP, SNMP, ...)
     Udp {
@@ -84,6 +100,9 @@ pub enum Commands {
         /// Print results as JSON (stdout) instead of a human report
         #[arg(long)]
         json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
     /// Half-open SYN scan: forges raw packets, needs root (IPv4 only)
     Syn {
@@ -99,5 +118,44 @@ pub enum Commands {
         /// Print results as JSON (stdout) instead of a human report
         #[arg(long)]
         json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
+    /// Generate shell completions (hidden helper: scouter26 completions bash)
+    #[command(hide = true)]
+    Completions {
+        /// Which shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::shells::Shell,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn completions_generate_for_every_shell() {
+        // If any shell's generation panics or comes back empty, Tab-completion
+        // is silently broken for those users — so test them all.
+        for shell in [
+            clap_complete::shells::Shell::Bash,
+            clap_complete::shells::Shell::Zsh,
+            clap_complete::shells::Shell::Fish,
+            clap_complete::shells::Shell::PowerShell,
+        ] {
+            let mut buffer = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "scouter26", &mut buffer);
+            assert!(!buffer.is_empty(), "{} produced no completions", shell);
+        }
+    }
+
+    #[test]
+    fn help_contains_worked_examples() {
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("Examples:"));
+        assert!(help.contains("scouter26 discover 192.168.1.0/24"));
+    }
 }

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use colored::*;
 use ipnet::IpNet;
+use std::path::PathBuf;
 
 use super::ports;
 use super::subnet::normalize_cidr;
@@ -261,6 +262,7 @@ pub fn execute(
     timeout_secs: f64,
     workers: usize,
     json: bool,
+    output: &Option<PathBuf>,
 ) -> Result<(), String> {
     let started_at = Instant::now();
 
@@ -328,22 +330,34 @@ pub fn execute(
         !json,
     );
 
-    if json {
+    // Report: JSON for machines, the human table otherwise — and a saved
+    // copy on disk whenever --output asks for one (the same JSON either
+    // way, so scripts and archives always agree).
+    if json || output.is_some() {
         let report = DiscoverReport {
             network: net.to_string(),
             hosts_probed: hosts.len(),
             probed_ports: probe_ports,
             duration_seconds: started_at.elapsed().as_secs_f32(),
             live_hosts: results
-                .into_iter()
-                .map(|(ip, open_ports)| HostFinding { ip, open_ports })
+                .iter()
+                .map(|(ip, open_ports)| HostFinding {
+                    ip: *ip,
+                    open_ports: open_ports.clone(),
+                })
                 .collect(),
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).expect("DiscoverReport always serializes")
-        );
-        return Ok(());
+        if let Some(path) = output {
+            super::write_report(path, &report)?;
+            eprintln!("{}", format!(" Report saved to {}", path.display()).cyan());
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("DiscoverReport always serializes")
+            );
+            return Ok(());
+        }
     }
 
     println!("{}", "========================================".cyan());

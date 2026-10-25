@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use colored::*;
+use std::path::PathBuf;
 
 use super::ports;
 use super::{
@@ -282,6 +283,7 @@ pub fn execute(
     workers: usize,
     prefer_ipv6: bool,
     json: bool,
+    output: &Option<PathBuf>,
 ) -> Result<(), String> {
     let started_at = Instant::now();
 
@@ -336,7 +338,9 @@ pub fn execute(
         );
     }
 
-    if json {
+    // Report: JSON for machines, the human table otherwise — and a saved
+    // copy on disk whenever --output asks for one.
+    if json || output.is_some() {
         let report = UdpReport {
             target: target.to_string(),
             resolved_ip: target_ip,
@@ -357,11 +361,17 @@ pub fn execute(
                 })
                 .collect(),
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).expect("UdpReport always serializes")
-        );
-        return Ok(());
+        if let Some(path) = output {
+            super::write_report(path, &report)?;
+            eprintln!("{}", format!(" Report saved to {}", path.display()).cyan());
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("UdpReport always serializes")
+            );
+            return Ok(());
+        }
     }
 
     println!("{}", "========================================".cyan());

@@ -1,6 +1,6 @@
 [package]
 name = "scouter26"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "A modular network toolbox: subnet math, port lookup, parallel TCP scan"
 readme = "README.md"
@@ -15,6 +15,8 @@ rust-version = "1.90"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+# Shell-completion generation for the hidden `completions` command.
+clap_complete = "4"
 ipnet = "2.9"
 colored = "3"
 # Serialization: turns our report structs into JSON for --json mode.

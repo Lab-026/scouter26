@@ -46,6 +46,21 @@ pub(crate) fn resolve_target(target: &str, prefer_ipv6: bool) -> Result<IpAddr, 
         .ok_or_else(|| format!("'{}' did not resolve to any usable IP address", target))
 }
 
+/// Write a report as pretty JSON to a file (--output).
+///
+/// Used by every scanning command so the saved format is identical
+/// everywhere: what lands on disk is byte-for-byte what --json would
+/// have printed.
+pub(crate) fn write_report(
+    path: &std::path::Path,
+    report: &impl serde::Serialize,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|error| format!("could not serialize the report: {}", error))?;
+    std::fs::write(path, json + "\n")
+        .map_err(|error| format!("could not write '{}': {}", path.display(), error))
+}
+
 /// A lock() only fails when a thread panicked while holding it
 /// ("poisoned"). The data itself is still fine, so recover it instead of
 /// silently dropping results. Generic so every mutex in this crate can use it.
@@ -116,4 +131,48 @@ pub(crate) fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
     ports.sort_unstable();
     ports.dedup();
     Ok(ports)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_land_on_disk_as_valid_json() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("scouter26-test-report-{}.json", std::process::id()));
+        #[derive(serde::Serialize)]
+        struct Sample {
+            tool: String,
+            version: u32,
+        }
+        write_report(
+            &path,
+            &Sample {
+                tool: "scouter26".into(),
+                version: 1,
+            },
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(value["tool"], "scouter26");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn unwritable_paths_fail_with_a_clear_message() {
+        let result = write_report(
+            std::path::Path::new("/nonexistent-dir-1964/report.json"),
+            &"x",
+        );
+        assert!(result.is_err());
+        let message = result.unwrap_err();
+        assert!(
+            message.contains("could not write"),
+            "message was: {}",
+            message
+        );
+    }
 }

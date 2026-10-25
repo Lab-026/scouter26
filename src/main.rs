@@ -1,7 +1,7 @@
 mod cli;
 mod commands;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
 use colored::Colorize;
 
@@ -16,6 +16,17 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // Shell completions are a service, not a scan: print them and leave.
+    if let Commands::Completions { shell } = &cli.command {
+        clap_complete::generate(
+            *shell,
+            &mut Cli::command(),
+            "scouter26",
+            &mut std::io::stdout(),
+        );
+        return;
+    }
+
     // Each command does its own work and reports failures as Err instead
     // of calling exit() deep inside the code — the single exit point
     // below is the only place that decides the process's fate.
@@ -29,8 +40,9 @@ fn main() {
             workers,
             ipv6,
             json,
+            output,
         } => (
-            commands::scan::execute(target, ports, *timeout, *workers, *ipv6, *json),
+            commands::scan::execute(target, ports, *timeout, *workers, *ipv6, *json, output),
             *json,
         ),
         Commands::Discover {
@@ -39,8 +51,9 @@ fn main() {
             timeout,
             workers,
             json,
+            output,
         } => (
-            commands::discover::execute(cidr, ports, *timeout, *workers, *json),
+            commands::discover::execute(cidr, ports, *timeout, *workers, *json, output),
             *json,
         ),
         Commands::Udp {
@@ -50,8 +63,9 @@ fn main() {
             workers,
             ipv6,
             json,
+            output,
         } => (
-            commands::udp::execute(target, ports, *timeout, *workers, *ipv6, *json),
+            commands::udp::execute(target, ports, *timeout, *workers, *ipv6, *json, output),
             *json,
         ),
         Commands::Syn {
@@ -59,10 +73,12 @@ fn main() {
             ports,
             timeout,
             json,
+            output,
         } => (
-            commands::syn::execute(target, ports, *timeout, *json),
+            commands::syn::execute(target, ports, *timeout, *json, output),
             *json,
         ),
+        Commands::Completions { .. } => unreachable!("handled above"),
     };
 
     if let Err(message) = result {

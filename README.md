@@ -95,6 +95,8 @@ $ scouter26 scan scanme.nmap.org --ports 20-1024 --timeout 2 --workers 500
 - `--ipv6` — prefer the IPv6 address when a hostname has both A and AAAA records
 - `--json` — machine-readable JSON report on stdout (warnings and errors go
   to stderr), ready for `jq` and log pipelines
+- `--output FILE` — also save the JSON report to a file, while the screen
+  keeps the human view
 
 Scans of 100+ ports show live progress. Both IPv4 and IPv6 targets work:
 dual-stack hostnames are scanned over IPv4 unless `--ipv6` is given, and a
@@ -132,6 +134,7 @@ $ scouter26 discover 192.168.1.0/24
 - `--ports`, `--timeout`, `--workers` work exactly as in `scan`
 - `--json` — machine-readable JSON report on stdout; `open_ports: []` on a
   live host means it answered with refusals only
+- `--output FILE` — also save the JSON report to a file
 - Sweeps are capped at 4096 hosts — use a longer prefix for anything wider
 - A host that silently drops every probe cannot be seen by TCP discovery
   (ICMP and ARP discovery are planned)
@@ -249,6 +252,14 @@ binstall scouter26` already works with the release tarballs)
 > [packaging/README.md](packaging/README.md). Today's packages install
 > directly from GitHub Releases. There is deliberately no Flatpak: see the
 > reasoning in [packaging/README.md](packaging/README.md).
+
+## Shell completions
+
+Tab-completion for commands and flags, for your shell of choice:
+
+```text
+scouter26 completions bash  >> ~/.bashrc    # or zsh/fish/powershell
+```
 
 ## Building and testing
 
