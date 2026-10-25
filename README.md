@@ -50,11 +50,16 @@ tar xf scouter26-x86_64-unknown-linux-gnu.tar.gz
 sudo install -m755 scouter26 /usr/local/bin/
 ```
 
-**Any system with Rust:**
+**Any Linux system (or macOS, mostly) with Rust:**
 
 ```text
 cargo install --locked scouter26
 ```
+
+scouter26 is Linux-first: every command is built and tested there. On macOS
+the pure commands (subnet, ports) and TCP-based ones work; the raw-packet
+commands (syn, trace) need `sudo` just like on Linux, and Windows is a
+future milestone — raw sockets there follow entirely different rules.
 
 (available once scouter26 makes its first crates.io publish; `cargo
 binstall scouter26` already works with the release tarballs)

@@ -30,3 +30,15 @@ jobs:
       # it is also clean and consistent, so quality can never quietly rot.
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
+
+  # Experimental: how healthy is macOS support really? Failures here are
+  # reported but do not turn the badge red (continue-on-error), so this
+  # job teaches without gating.
+  macos-experiment:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build
+      - run: cargo test
