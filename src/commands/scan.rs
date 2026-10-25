@@ -47,7 +47,8 @@ const BANNER_MAX_BYTES: usize = 128;
 const BANNER_MAX_CHARS: usize = 80;
 
 /// The ports scanned when the user does not pick their own.
-const DEFAULT_PORTS: [u16; 10] = [22, 23, 25, 53, 80, 110, 143, 443, 445, 3389];
+/// (Shared with the SYN scanner, which defaults to the same list.)
+pub(crate) const DEFAULT_PORTS: [u16; 10] = [22, 23, 25, 53, 80, 110, 143, 443, 445, 3389];
 
 /// After a successful connect, some services announce themselves
 /// immediately (SSH, FTP, SMTP...). Read whatever arrives within

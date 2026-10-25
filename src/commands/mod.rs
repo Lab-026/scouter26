@@ -4,6 +4,7 @@ pub mod discover;
 pub mod ports;
 pub mod scan;
 pub mod subnet;
+pub mod syn;
 pub mod udp;
 
 use std::net::{IpAddr, ToSocketAddrs};

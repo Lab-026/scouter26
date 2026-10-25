@@ -85,4 +85,19 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Half-open SYN scan: forges raw packets, needs root (IPv4 only)
+    Syn {
+        /// The IPv4 address or hostname to scan (e.g., 192.168.1.1)
+        target: String,
+        /// Ports to scan: one (80), a list (22,80,443), or a range (1-1024).
+        /// Default: the 10 most common ports.
+        #[arg(short, long)]
+        ports: Option<String>,
+        /// Seconds to wait for replies; silent ports are probed twice
+        #[arg(long, default_value_t = 1.0)]
+        timeout: f64,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
+    },
 }

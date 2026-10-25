@@ -46,6 +46,15 @@ fn main() {
             commands::udp::execute(target, ports, *timeout, *workers, *ipv6, *json),
             *json,
         ),
+        Commands::Syn {
+            target,
+            ports,
+            timeout,
+            json,
+        } => (
+            commands::syn::execute(target, ports, *timeout, *json),
+            *json,
+        ),
     };
 
     if let Err(message) = result {

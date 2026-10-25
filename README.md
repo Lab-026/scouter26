@@ -16,6 +16,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4 & IPv6)  |
 | `scouter26 discover <cidr>`  | Find live hosts in a subnet              |
 | `scouter26 udp <target>`     | Probe UDP services (DNS, NTP, SNMP, ...) |
+| `scouter26 syn <target>`     | Half-open SYN scan (needs root, IPv4)    |
 
 ## subnet
 
@@ -163,6 +164,31 @@ $ scouter26 udp 192.168.1.1
   noticed — the kernel delivers the ICMP verdict to the next syscall)
 - Sweeping huge UDP ranges is self-defeating: the target's ICMP rate
   limit makes closed ports look filtered. Keep lists small.
+
+> **Warning:** Only scan systems you own or have written permission to scan.
+
+## syn
+
+The half-open SYN scan — the classic "stealth" scan. Instead of completing
+the TCP handshake, it sends only the opening SYN and classifies the reply:
+**SYN-ACK** means open (the handshake is then abandoned, so most services
+never log you), **RST** means closed, silence means **filtered**.
+
+Forging raw packets is a privileged operation, so this command needs root:
+
+```text
+$ sudo scouter26 syn 192.168.1.1 --ports 22,80,443
+
+ Port 22     ssh        OPEN  SYN-ACK received — handshake abandoned
+ Port 80     http       OPEN  SYN-ACK received — handshake abandoned
+ Port 443    https      FILTERED  (no reply)
+```
+
+- IPv4 only for now (raw IPv6 injection follows different kernel rules)
+- Every packet's IP and TCP checksums are computed by hand in this
+  repository — no packet library involved
+- `--timeout` controls the reply window; silent ports are probed twice,
+  and `--json` works as in `scan`
 
 > **Warning:** Only scan systems you own or have written permission to scan.
 
