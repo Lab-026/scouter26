@@ -225,7 +225,7 @@ fn sweep(
         .clone()
         .into_iter()
         .collect();
-    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results.sort_by_key(|result| result.0);
     for (_, open) in results.iter_mut() {
         open.sort_unstable();
     }

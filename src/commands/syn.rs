@@ -34,12 +34,13 @@ const TCP_ACK: u8 = 0x10;
 /// the checksum included must arrive at all-ones.
 fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum = 0u32;
-    let mut words = data.chunks_exact(2);
-    for word in &mut words {
-        sum += u16::from_be_bytes([word[0], word[1]]) as u32;
+    // as_chunks hands us the data as &[u8; 2] words plus the odd tail.
+    let (words, remainder) = data.as_chunks::<2>();
+    for word in words {
+        sum += u16::from_be_bytes(*word) as u32;
     }
     // An odd trailing byte counts as a high-order byte (padded with zero).
-    if let [odd] = words.remainder() {
+    if let [odd] = remainder {
         sum += (*odd as u32) << 8;
     }
     while sum >> 16 != 0 {
