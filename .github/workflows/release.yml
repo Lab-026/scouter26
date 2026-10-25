@@ -84,6 +84,14 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # Checksums let anyone verify their download landed intact — a
+      # habit that scales into signing as the project matures.
+      - name: Generate SHA256 checksums
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+
       # Only a real version tag gets a Release; manual runs stop here,
       # having proven the pipeline by producing downloadable artifacts.
       - name: Attach everything to the GitHub Release

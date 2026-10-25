@@ -167,7 +167,7 @@ $ scouter26 subnet 192.168.10.0/24
  Host Range    : 192.168.10.1 - 192.168.10.254
  Total IPs     : 256
  Usable Hosts  : 254
- Class         : C
+ Class         : C (historic — CIDR replaced classes in 1993)
  Type          : Private (RFC 1918)
 ========================================
 ```
@@ -310,10 +310,14 @@ $ scouter26 udp 192.168.1.1
 
 ### syn
 
-The half-open SYN scan — the classic "stealth" scan. Instead of completing
-the TCP handshake, it sends only the opening SYN and classifies the reply:
-**SYN-ACK** means open (the handshake is then abandoned, so most services
-never log you), **RST** means closed, silence means **filtered**.
+The half-open SYN scan. Instead of completing the TCP handshake, it sends
+only the opening SYN and classifies the reply: **SYN-ACK** means open (the
+handshake is then abandoned, so many services never record an application
+connection), **RST** means closed, silence means **filtered**.
+
+"Half-open" is not the same as invisible: firewall logs, flow monitors and
+IDS tools can still spot SYN sweeps. What it avoids is the *application's*
+connection log — not the network's.
 
 Forging raw packets is a privileged operation, so this command needs root:
 

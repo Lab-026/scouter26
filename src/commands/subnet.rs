@@ -42,6 +42,9 @@ pub fn wildcard_mask(prefix: u8) -> Ipv4Addr {
 }
 
 /// The historic class of an address, decided by its first octet.
+/// Classes are a legacy concept — CIDR replaced them in 1993 — but IT
+/// Support exams still ask for them, so we report them labelled as what
+/// they are: history.
 pub fn address_class(first_octet: u8) -> &'static str {
     match first_octet {
         0..=127 => "A",
@@ -219,7 +222,11 @@ fn print_v4_report(net: Ipv4Net) {
         "Usable Hosts",
         group_digits(&usable_hosts(prefix).to_string()).green()
     );
-    println!(" {:<14}: {}", "Class", address_class(addr.octets()[0]));
+    println!(
+        " {:<14}: {} (historic — CIDR replaced classes in 1993)",
+        "Class",
+        address_class(addr.octets()[0])
+    );
     println!(" {:<14}: {}", "Type", address_type(addr));
 }
 
