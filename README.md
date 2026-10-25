@@ -3,25 +3,143 @@
 [![CI](https://github.com/Lab-026/scouter26/actions/workflows/ci.yml/badge.svg)](https://github.com/Lab-026/scouter26/actions/workflows/ci.yml)
 
 A modular network toolbox CLI for IT support technicians and junior network
-administrators — subnet math, port lookups, and TCP scanning in one command.
+administrators — ping, DNS, traceroute, subnet math, and network scanning in
+one command.
 
 Named after Zastava's weapon naming convention: a name, plus the year.
 
-## Commands
+## Installation
 
-| Command                      | Description                              |
-| ---------------------------- | ---------------------------------------- |
-| `scouter26 subnet <cidr>`    | Full IPv4 **and IPv6** subnet breakdown  |
-| `scouter26 ports <query>`    | Port lookup by number or service name    |
-| `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4 & IPv6)  |
-| `scouter26 discover <cidr>`  | Find live hosts in a subnet              |
-| `scouter26 udp <target>`     | Probe UDP services (DNS, NTP, SNMP, ...) |
-| `scouter26 syn <target>`     | Half-open SYN scan (needs root, IPv4)    |
-| `scouter26 ping <target>`    | ICMP ping with TCP fallback              |
-| `scouter26 dns <name>`       | DNS lookups: A, AAAA, MX, TXT, NS, ...   |
-| `scouter26 trace <target>`   | Map the path to a host, hop by hop       |
+Pick whichever fits your distro — or the plain binary, which works everywhere.
+Prebuilt packages are attached automatically to every
+[GitHub Release](https://github.com/Lab-026/scouter26/releases) — no Rust
+required for any of the methods below.
 
-## subnet
+**Fedora 43/44 (COPR repository — one command, and updates arrive automatically):**
+
+```text
+sudo dnf copr enable nobody26/scouter26
+sudo dnf install scouter26
+```
+
+**Debian, Ubuntu, Mint, Kali (.deb):**
+
+```text
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-amd64.deb
+sudo apt install ./scouter26-amd64.deb
+```
+
+**Fedora, RHEL, openSUSE (.rpm file, no repository):**
+
+```text
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64.rpm
+sudo dnf install ./scouter26-x86_64.rpm
+```
+
+**Arch, Manjaro, EndeavourOS (AUR kit):**
+
+The [packaging/PKGBUILD](packaging/PKGBUILD) builds a `scouter26-bin`
+package from the official release tarball — local install and AUR
+publishing steps are in [packaging/README.md](packaging/README.md).
+
+**Plain binary, any distro (x86_64 or aarch64):**
+
+```text
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64-unknown-linux-gnu.tar.gz
+tar xf scouter26-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m755 scouter26 /usr/local/bin/
+```
+
+**Any system with Rust:**
+
+```text
+cargo install --locked scouter26
+```
+
+(available once scouter26 makes its first crates.io publish; `cargo
+binstall scouter26` already works with the release tarballs)
+
+> **Note:** The official Debian, Fedora and Arch *repositories* have their
+> own review processes — that milestone (scouter26 in `apt`, `dnf` and the
+> AUR proper) is documented as a future goal in
+> [packaging/README.md](packaging/README.md). Today's packages install
+> directly from GitHub Releases. There is deliberately no Flatpak: see the
+> reasoning in [packaging/README.md](packaging/README.md).
+
+## Everyday diagnostics
+
+The commands a support shift runs all day long.
+
+| Command                    | Description                             |
+| -------------------------- | --------------------------------------- |
+| `scouter26 ping <target>`  | ICMP ping with TCP fallback             |
+| `scouter26 dns <name>`     | DNS lookups: A, AAAA, MX, TXT, NS, ...  |
+| `scouter26 trace <target>` | Map the path to a host, hop by hop      |
+| `scouter26 subnet <cidr>`  | Full IPv4 **and IPv6** subnet breakdown |
+| `scouter26 ports <query>`  | Port lookup by number or service name   |
+
+### ping
+
+The question IT Support asks fifty times a day: *"is it even up?"* Sends
+real ICMP echo requests — unprivileged, thanks to Linux ping sockets —
+and reports latency, loss, and min/avg/max. When ICMP is unavailable
+(other systems, or IPv6 targets for now), it falls back to a TCP probe
+against `--port` (default 443) and says so in every line:
+
+```text
+$ scouter26 ping 192.168.1.1
+
+ reply from 192.168.1.1: seq=1 time=1.24 ms
+ reply from 192.168.1.1: seq=2 time=1.19 ms
+ reply from 192.168.1.1: seq=3 time=1.21 ms
+ reply from 192.168.1.1: seq=4 time=1.20 ms
+----------------------------------------
+ 4 probes sent, 4 received, 0.0% packet loss
+ rtt min/avg/max: 1.19/1.21/1.24 ms (icmp)
+```
+
+`--count`, `--interval`, `--timeout`, `--port`, `--json` and `--output`
+work as elsewhere. A refused TCP port still counts as "up": a machine
+that refuses is a machine that is on.
+
+### dns
+
+*"Why can't they reach mail.corp.local?"* — look up A, AAAA, MX, TXT, NS,
+PTR, CNAME and SOA records, asking your system's own resolver by default
+(the same one the user's machine uses — that matters when diagnosing):
+
+```text
+$ scouter26 dns github.com --type MX
+
+ MX      0 github-com.mail.protection.outlook.com           TTL 300
+```
+
+A nonexistent name gets a plain-language error (`NXDOMAIN: that name does
+not exist`), and `--server 1.1.1.1` asks a different resolver when you
+want to compare answers. Queries and responses — including DNS name
+compression — are parsed by hand in this repository.
+
+### trace
+
+*"Where does the path die?"* — sends echo probes with a climbing
+time-to-live and lets every router along the way betray its address by
+answering "Time Exceeded". The destination ends the trace with a normal
+reply:
+
+```text
+$ sudo scouter26 trace 1.1.1.1
+
+  1  192.168.1.1                                        1.42 ms
+  2  100.64.0.1                                         8.11 ms
+  3  *                                                  no reply
+  7  1.1.1.1                                            23.10 ms — destination reached
+```
+
+Like `syn`, it forges raw packets (a TTL cannot be set from userspace),
+so it needs `sudo` and speaks IPv4. `--hops`, `--timeout`, `--json` and
+`--output` behave as elsewhere.
+
+### subnet
 
 Give it a CIDR — IPv4 **or** IPv6 — and it returns the network address,
 netmask, wildcard mask, broadcast address, usable host range, host counts, IP
@@ -67,7 +185,7 @@ $ scouter26 subnet 2001:db8::/32
 
 A bare address with no `/prefix` means a single host (`/32` or `/128`).
 
-## ports
+### ports
 
 Look up common ports in either direction — by number or by service name:
 
@@ -78,37 +196,19 @@ $ scouter26 ports ssh
 
 Partial names get "did you mean" suggestions — try `scouter26 ports netbios`.
 
-## scan
+## Scanning and discovery
 
-Resolves the target's DNS once, probes TCP ports in parallel with a tunable
-worker pool, and reports which ones are open — with the service name, and the
-service's own banner whenever it announces one (SSH, FTP and SMTP servers
-typically do).
+The deeper tools — for mapping and auditing a network you are authorised to
+touch.
 
-```text
-$ scouter26 scan scanme.nmap.org
-$ scouter26 scan scanme.nmap.org --ports 22,80,443
-$ scouter26 scan scanme.nmap.org --ports 20-1024 --timeout 2 --workers 500
-```
+| Command                     | Description                              |
+| --------------------------- | ---------------------------------------- |
+| `scouter26 discover <cidr>` | Find live hosts in a subnet              |
+| `scouter26 scan <target>`   | Parallel TCP connect scan (IPv4 & IPv6)  |
+| `scouter26 udp <target>`    | Probe UDP services (DNS, NTP, SNMP, ...) |
+| `scouter26 syn <target>`    | Half-open SYN scan (needs root, IPv4)    |
 
-- `--ports` — one port, a comma-separated list, or a range
-  (default: the 10 most common ports)
-- `--timeout` — seconds to wait per port before calling it closed (default: 1)
-- `--workers` — how many ports to probe at the same time (default: 200, max 2000)
-- `--ipv6` — prefer the IPv6 address when a hostname has both A and AAAA records
-- `--json` — machine-readable JSON report on stdout (warnings and errors go
-  to stderr), ready for `jq` and log pipelines
-- `--output FILE` — also save the JSON report to a file, while the screen
-  keeps the human view
-
-Scans of 100+ ports show live progress. Both IPv4 and IPv6 targets work:
-dual-stack hostnames are scanned over IPv4 unless `--ipv6` is given, and a
-bare IPv6 address (or an IPv6-only hostname) scans over IPv6 directly.
-
-> **Warning:** Only scan systems you own or have written permission to scan.
-> Unauthorized port scanning is illegal in many jurisdictions.
-
-## discover
+### discover
 
 Sweep a subnet for live machines by probing a handful of classic ports on
 every address. A host counts as **ALIVE** if any probe connects — or is
@@ -144,7 +244,37 @@ $ scouter26 discover 192.168.1.0/24
 
 > **Warning:** Only scan networks you own or have permission to scan.
 
-## udp
+### scan
+
+Resolves the target's DNS once, probes TCP ports in parallel with a tunable
+worker pool, and reports which ones are open — with the service name, and the
+service's own banner whenever it announces one (SSH, FTP and SMTP servers
+typically do).
+
+```text
+$ scouter26 scan scanme.nmap.org
+$ scouter26 scan scanme.nmap.org --ports 22,80,443
+$ scouter26 scan scanme.nmap.org --ports 20-1024 --timeout 2 --workers 500
+```
+
+- `--ports` — one port, a comma-separated list, or a range
+  (default: the 10 most common ports)
+- `--timeout` — seconds to wait per port before calling it closed (default: 1)
+- `--workers` — how many ports to probe at the same time (default: 200, max 2000)
+- `--ipv6` — prefer the IPv6 address when a hostname has both A and AAAA records
+- `--json` — machine-readable JSON report on stdout (warnings and errors go
+  to stderr), ready for `jq` and log pipelines
+- `--output FILE` — also save the JSON report to a file, while the screen
+  keeps the human view
+
+Scans of 100+ ports show live progress. Both IPv4 and IPv6 targets work:
+dual-stack hostnames are scanned over IPv4 unless `--ipv6` is given, and a
+bare IPv6 address (or an IPv6-only hostname) scans over IPv6 directly.
+
+> **Warning:** Only scan systems you own or have written permission to scan.
+> Unauthorized port scanning is illegal in many jurisdictions.
+
+### udp
 
 UDP has no handshake, so port states are fundamentally different from TCP.
 `udp` sends real protocol payloads (a DNS query, an NTP client request, an
@@ -173,7 +303,7 @@ $ scouter26 udp 192.168.1.1
 
 > **Warning:** Only scan systems you own or have written permission to scan.
 
-## syn
+### syn
 
 The half-open SYN scan — the classic "stealth" scan. Instead of completing
 the TCP handshake, it sends only the opening SYN and classifies the reply:
@@ -197,125 +327,6 @@ $ sudo scouter26 syn 192.168.1.1 --ports 22,80,443
   and `--json` works as in `scan`
 
 > **Warning:** Only scan systems you own or have written permission to scan.
-
-## Installation
-
-Pick whichever fits your distro — or the plain binary, which works everywhere.
-Prebuilt packages are attached automatically to every
-[GitHub Release](https://github.com/Lab-026/scouter26/releases) — no Rust
-required for any of the methods below.
-
-**Debian, Ubuntu, Mint, Kali (.deb):**
-
-```text
-wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-amd64.deb
-sudo apt install ./scouter26-amd64.deb
-```
-
-**Fedora 43/44 (COPR repository — one command, and updates arrive automatically):**
-
-```text
-sudo dnf copr enable nobody26/scouter26
-sudo dnf install scouter26
-```
-
-**Fedora, RHEL, openSUSE (.rpm file, no repository):**
-
-```text
-wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64.rpm
-sudo dnf install ./scouter26-x86_64.rpm
-```
-
-**Arch, Manjaro, EndeavourOS (AUR kit):**
-
-The [packaging/PKGBUILD](packaging/PKGBUILD) builds a `scouter26-bin`
-package from the official release tarball — local install and AUR
-publishing steps are in [packaging/README.md](packaging/README.md).
-
-**Plain binary, any distro (x86_64 or aarch64):**
-
-```text
-wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64-unknown-linux-gnu.tar.gz
-tar xf scouter26-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m755 scouter26 /usr/local/bin/
-```
-
-**Any system with Rust:**
-
-```text
-cargo install --locked scouter26
-```
-
-(available once scouter26 makes its first crates.io publish; `cargo
-binstall scouter26` already works with the release tarballs)
-
-> **Note:** The official Debian, Fedora and Arch *repositories* have their
-> own review processes — that milestone (scouter26 in `apt`, `dnf` and the
-> AUR proper) is documented as a future goal in
-> [packaging/README.md](packaging/README.md). Today's packages install
-> directly from GitHub Releases. There is deliberately no Flatpak: see the
-> reasoning in [packaging/README.md](packaging/README.md).
-
-## ping
-
-The question IT Support asks fifty times a day: *"is it even up?"* Sends
-real ICMP echo requests — unprivileged, thanks to Linux ping sockets —
-and reports latency, loss, and min/avg/max. When ICMP is unavailable
-(other systems, or IPv6 targets for now), it falls back to a TCP probe
-against `--port` (default 443) and says so in every line:
-
-```text
-$ scouter26 ping 192.168.1.1
-
- reply from 192.168.1.1: seq=1 time=1.24 ms
- reply from 192.168.1.1: seq=2 time=1.19 ms
- reply from 192.168.1.1: seq=3 time=1.21 ms
- reply from 192.168.1.1: seq=4 time=1.20 ms
-----------------------------------------
- 4 probes sent, 4 received, 0.0% packet loss
- rtt min/avg/max: 1.19/1.21/1.24 ms (icmp)
-```
-
-`--count`, `--interval`, `--timeout`, `--port`, `--json` and `--output`
-work as elsewhere. A refused TCP port still counts as "up": a machine
-that refuses is a machine that is on.
-
-## dns
-
-*"Why can't they reach mail.corp.local?"* — look up A, AAAA, MX, TXT, NS,
-PTR, CNAME and SOA records, asking your system's own resolver by default
-(the same one the user's machine uses — that matters when diagnosing):
-
-```text
-$ scouter26 dns github.com --type MX
-
- MX      0 github-com.mail.protection.outlook.com           TTL 300
-```
-
-A nonexistent name gets a plain-language error (`NXDOMAIN: that name does
-not exist`), and `--server 1.1.1.1` asks a different resolver when you
-want to compare answers. Queries and responses — including DNS name
-compression — are parsed by hand in this repository.
-
-## trace
-
-*"Where does the path die?"* — sends echo probes with a climbing
-time-to-live and lets every router along the way betray its address by
-answering "Time Exceeded". The destination ends the trace with a normal
-reply:
-
-```text
-$ sudo scouter26 trace 1.1.1.1
-
-  1  192.168.1.1                                        1.42 ms
-  2  100.64.0.1                                         8.11 ms
-  3  *                                                  no reply
-  7  1.1.1.1                                            23.10 ms — destination reached
-```
-
-Like `syn`, it forges raw packets (a TTL cannot be set from userspace),
-so it needs `sudo` and speaks IPv4. `--hops`, `--timeout`, `--json` and
-`--output` behave as elsewhere.
 
 ## Shell completions
 
