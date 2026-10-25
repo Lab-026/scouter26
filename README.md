@@ -15,6 +15,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 ports <query>`    | Port lookup by number or service name    |
 | `scouter26 scan <target>`    | Parallel TCP connect scan (IPv4 & IPv6)  |
 | `scouter26 discover <cidr>`  | Find live hosts in a subnet              |
+| `scouter26 udp <target>`     | Probe UDP services (DNS, NTP, SNMP, ...) |
 
 ## subnet
 
@@ -135,6 +136,35 @@ $ scouter26 discover 192.168.1.0/24
   (ICMP and ARP discovery are planned)
 
 > **Warning:** Only scan networks you own or have permission to scan.
+
+## udp
+
+UDP has no handshake, so port states are fundamentally different from TCP.
+`udp` sends real protocol payloads (a DNS query, an NTP client request, an
+SNMP GET) where it knows the dialect, and plain datagrams elsewhere, then
+reports one of three verdicts:
+
+| Verdict          | Meaning                                                     |
+| ---------------- | ----------------------------------------------------------- |
+| `OPEN`           | The service answered — proof of life                        |
+| `CLOSED`         | The host's kernel said "nothing listens here" (ICMP)        |
+| `OPEN\|FILTERED` | Silence: an open-but-quiet service or a firewall — UDP cannot tell |
+
+```text
+$ scouter26 udp 192.168.1.1
+
+ Port 53     dns         OPEN  (47 bytes received)
+ Port 123    ntp         OPEN|FILTERED  (no response — open or firewalled)
+ Port 161    snmp        CLOSED  host says: nothing listens here
+```
+
+- `--ports`, `--timeout`, `--workers`, `--ipv6`, `--json` as in `scan`;
+  silent ports are probed twice (the retransmit is how closed ports get
+  noticed — the kernel delivers the ICMP verdict to the next syscall)
+- Sweeping huge UDP ranges is self-defeating: the target's ICMP rate
+  limit makes closed ports look filtered. Keep lists small.
+
+> **Warning:** Only scan systems you own or have written permission to scan.
 
 ## Installation
 

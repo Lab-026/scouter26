@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -9,7 +9,9 @@ use std::time::Duration;
 use colored::*;
 
 use super::ports;
-use super::{parse_ports, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD};
+use super::{
+    parse_ports, resolve_target, unlock, validate_tunables, MAX_WORKERS, PROGRESS_THRESHOLD,
+};
 
 /// One scan result: a port number plus whatever banner the service
 /// announced (None when it stayed quiet).
@@ -46,35 +48,6 @@ const BANNER_MAX_CHARS: usize = 80;
 
 /// The ports scanned when the user does not pick their own.
 const DEFAULT_PORTS: [u16; 10] = [22, 23, 25, 53, 80, 110, 143, 443, 445, 3389];
-
-/// Turn a hostname or IP string into one IP address (either family).
-///
-/// A bare IP skips DNS entirely. A hostname that resolves to both
-/// families gets its IPv4 address first — the same default nmap uses —
-/// unless the user asked for IPv6 with --ipv6. Single-family names
-/// simply get whatever they have, so IPv6-only hosts scan normally.
-fn resolve_target(target: &str, prefer_ipv6: bool) -> Result<IpAddr, String> {
-    if let Ok(ip) = target.parse::<IpAddr>() {
-        return Ok(ip);
-    }
-
-    let addrs = match (target, 0u16).to_socket_addrs() {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(_) => return Err(format!("could not resolve '{}' to an IP address", target)),
-    };
-
-    let pick = |want_v6: bool| {
-        addrs.iter().find_map(|addr| match addr.ip() {
-            IpAddr::V6(v6) if want_v6 => Some(IpAddr::V6(v6)),
-            IpAddr::V4(v4) if !want_v6 => Some(IpAddr::V4(v4)),
-            _ => None,
-        })
-    };
-
-    pick(prefer_ipv6)
-        .or_else(|| pick(!prefer_ipv6))
-        .ok_or_else(|| format!("'{}' did not resolve to any usable IP address", target))
-}
 
 /// After a successful connect, some services announce themselves
 /// immediately (SSH, FTP, SMTP...). Read whatever arrives within

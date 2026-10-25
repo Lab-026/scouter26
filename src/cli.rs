@@ -64,4 +64,25 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Probe UDP services on a host (DNS, NTP, SNMP, ...)
+    Udp {
+        /// The IP address or hostname to probe (e.g., 192.168.1.1)
+        target: String,
+        /// Ports to probe: one, a list, or a range.
+        /// Default: 53, 69, 123, 137, 161, 514.
+        #[arg(short, long)]
+        ports: Option<String>,
+        /// Seconds to wait per attempt; silent ports are probed twice
+        #[arg(long, default_value_t = 1.0)]
+        timeout: f64,
+        /// How many probes to send at the same time (1-2000)
+        #[arg(long, default_value_t = 200)]
+        workers: usize,
+        /// Prefer the IPv6 address when a hostname has both A and AAAA records
+        #[arg(long)]
+        ipv6: bool,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
+    },
 }

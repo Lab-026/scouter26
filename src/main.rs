@@ -35,6 +35,17 @@ fn main() {
             commands::discover::execute(cidr, ports, *timeout, *workers, *json),
             *json,
         ),
+        Commands::Udp {
+            target,
+            ports,
+            timeout,
+            workers,
+            ipv6,
+            json,
+        } => (
+            commands::udp::execute(target, ports, *timeout, *workers, *ipv6, *json),
+            *json,
+        ),
     };
 
     if let Err(message) = result {

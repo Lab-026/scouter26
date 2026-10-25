@@ -4,6 +4,9 @@ pub mod discover;
 pub mod ports;
 pub mod scan;
 pub mod subnet;
+pub mod udp;
+
+use std::net::{IpAddr, ToSocketAddrs};
 
 /// The hard ceiling for --workers in the scanning commands. Beyond a few
 /// thousand, the threads cost more than they save and local
@@ -12,6 +15,35 @@ pub(crate) const MAX_WORKERS: usize = 2000;
 
 /// Live progress lines are only worth their screen noise on long jobs.
 pub(crate) const PROGRESS_THRESHOLD: usize = 100;
+
+/// Turn a hostname or IP string into one IP address (either family).
+///
+/// A bare IP skips DNS entirely. A hostname that resolves to both
+/// families gets its IPv4 address first — the same default nmap uses —
+/// unless the user asked for IPv6 with --ipv6. Single-family names
+/// simply get whatever they have, so IPv6-only hosts work normally.
+pub(crate) fn resolve_target(target: &str, prefer_ipv6: bool) -> Result<IpAddr, String> {
+    if let Ok(ip) = target.parse::<IpAddr>() {
+        return Ok(ip);
+    }
+
+    let addrs = match (target, 0u16).to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => return Err(format!("could not resolve '{}' to an IP address", target)),
+    };
+
+    let pick = |want_v6: bool| {
+        addrs.iter().find_map(|addr| match addr.ip() {
+            IpAddr::V6(v6) if want_v6 => Some(IpAddr::V6(v6)),
+            IpAddr::V4(v4) if !want_v6 => Some(IpAddr::V4(v4)),
+            _ => None,
+        })
+    };
+
+    pick(prefer_ipv6)
+        .or_else(|| pick(!prefer_ipv6))
+        .ok_or_else(|| format!("'{}' did not resolve to any usable IP address", target))
+}
 
 /// A lock() only fails when a thread panicked while holding it
 /// ("poisoned"). The data itself is still fine, so recover it instead of
