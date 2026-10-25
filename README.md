@@ -19,6 +19,7 @@ Named after Zastava's weapon naming convention: a name, plus the year.
 | `scouter26 syn <target>`     | Half-open SYN scan (needs root, IPv4)    |
 | `scouter26 ping <target>`    | ICMP ping with TCP fallback              |
 | `scouter26 dns <name>`       | DNS lookups: A, AAAA, MX, TXT, NS, ...   |
+| `scouter26 trace <target>`   | Map the path to a host, hop by hop       |
 
 ## subnet
 
@@ -295,6 +296,26 @@ A nonexistent name gets a plain-language error (`NXDOMAIN: that name does
 not exist`), and `--server 1.1.1.1` asks a different resolver when you
 want to compare answers. Queries and responses — including DNS name
 compression — are parsed by hand in this repository.
+
+## trace
+
+*"Where does the path die?"* — sends echo probes with a climbing
+time-to-live and lets every router along the way betray its address by
+answering "Time Exceeded". The destination ends the trace with a normal
+reply:
+
+```text
+$ sudo scouter26 trace 1.1.1.1
+
+  1  192.168.1.1                                        1.42 ms
+  2  100.64.0.1                                         8.11 ms
+  3  *                                                  no reply
+  7  1.1.1.1                                            23.10 ms — destination reached
+```
+
+Like `syn`, it forges raw packets (a TTL cannot be set from userspace),
+so it needs `sudo` and speaks IPv4. `--hops`, `--timeout`, `--json` and
+`--output` behave as elsewhere.
 
 ## Shell completions
 

@@ -162,6 +162,23 @@ pub enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Map the path to a host, hop by hop (needs root, IPv4 only)
+    Trace {
+        /// The IPv4 address or hostname to trace (e.g., 1.1.1.1)
+        target: String,
+        /// Maximum hops to try. Default: 15.
+        #[arg(short = 'm', long, default_value_t = 15)]
+        hops: u8,
+        /// Seconds to wait for each hop to answer
+        #[arg(long, default_value_t = 2.0)]
+        timeout: f64,
+        /// Print results as JSON (stdout) instead of a human report
+        #[arg(long)]
+        json: bool,
+        /// Also save the JSON report to this file
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Generate shell completions (hidden helper: scouter26 completions bash)
     #[command(hide = true)]
     Completions {

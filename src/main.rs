@@ -100,6 +100,16 @@ fn main() {
             commands::syn::execute(target, ports, *timeout, *json, output),
             *json,
         ),
+        Commands::Trace {
+            target,
+            hops,
+            timeout,
+            json,
+            output,
+        } => (
+            commands::trace::execute(target, *hops, *timeout, *json, output),
+            *json,
+        ),
         Commands::Completions { .. } => unreachable!("handled above"),
     };
 

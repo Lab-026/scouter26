@@ -76,6 +76,16 @@ to raw packet surgery — with every phase verified against live networks
   other server errors become plain-language messages with proper exit
   codes; `--json` and `--output` work as everywhere.
 
+## [1.4.0] - 2026-10-25
+
+### Added
+- `trace` command: classic traceroute with hand-forged IP+ICMP packets
+  whose TTL climbs hop by hop — routers betray themselves via ICMP Time
+  Exceeded, and the destination closes the trace with an Echo Reply.
+  Needs root (like `syn`); IPv4; `--hops/--timeout/--json/--output`.
+- The raw-socket engine and local-source detection are now shared
+  infrastructure used by both `syn` and `trace`.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

@@ -7,9 +7,12 @@ pub mod ports;
 pub mod scan;
 pub mod subnet;
 pub mod syn;
+pub mod trace;
 pub mod udp;
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::time::Duration;
 
 /// The hard ceiling for --workers in the scanning commands. Beyond a few
 /// thousand, the threads cost more than they save and local
@@ -155,6 +158,140 @@ pub(crate) fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
     ports.sort_unstable();
     ports.dedup();
     Ok(ports)
+}
+
+/// A SOCK_RAW / IPPROTO_TCP socket with IP_HDRINCL: we supply the whole
+/// IPv4 header ourselves. Creating one needs root (CAP_NET_RAW) — that
+/// is not a bug, it is the kernel defending everyone else from packet
+/// forgery.
+pub(crate) struct RawSocket {
+    fd: libc::c_int,
+}
+
+impl RawSocket {
+    pub(crate) fn new() -> Result<Self, io::Error> {
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_TCP);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let one: libc::c_int = 1;
+            let ok = libc::setsockopt(
+                fd,
+                libc::IPPROTO_IP,
+                libc::IP_HDRINCL,
+                &one as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            if ok != 0 {
+                let error = io::Error::last_os_error();
+                libc::close(fd);
+                return Err(error);
+            }
+            Ok(RawSocket { fd })
+        }
+    }
+
+    pub(crate) fn send(&self, packet: &[u8], dst: Ipv4Addr) -> Result<(), io::Error> {
+        let addr = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0, // ignored: the port lives in the header we built
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes(dst.octets()),
+            },
+            sin_zero: [0; 8],
+        };
+        unsafe {
+            let sent = libc::sendto(
+                self.fd,
+                packet.as_ptr() as *const libc::c_void,
+                packet.len(),
+                0,
+                &addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            );
+            if sent < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn set_read_timeout(&self, timeout: Duration) {
+        let tv = libc::timeval {
+            tv_sec: timeout.as_secs() as libc::time_t,
+            tv_usec: timeout.subsec_micros() as libc::suseconds_t,
+        };
+        unsafe {
+            libc::setsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &tv as *const libc::timeval as *const libc::c_void,
+                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+            );
+        }
+    }
+
+    /// Read one raw datagram, or None when the timeout slice elapsed.
+    pub(crate) fn recv(&self, buf: &mut [u8]) -> Option<usize> {
+        unsafe {
+            let mut addr: libc::sockaddr_in = std::mem::zeroed();
+            let mut addr_len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            let n = libc::recvfrom(
+                self.fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+                0,
+                &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
+                &mut addr_len,
+            );
+            if n <= 0 { None } else { Some(n as usize) }
+        }
+    }
+
+    /// A second file descriptor for the same socket, so one thread can
+    /// read while others send. The returned wrapper owns (and closes)
+    /// its duplicated descriptor; socket options carry over, because dup
+    /// shares the underlying socket.
+    pub(crate) fn dup_for_reading(&self) -> RawSocket {
+        RawSocket {
+            fd: unsafe { libc::dup(self.fd) },
+        }
+    }
+}
+
+impl Drop for RawSocket {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
+    }
+}
+
+// The fd is a plain integer; every use is a thread-safe syscall and the
+// reader gets its own dup'd descriptor, so sharing is sound.
+unsafe impl Send for RawSocket {}
+unsafe impl Sync for RawSocket {}
+
+/// Which local IP would the kernel use to reach this target? The trick:
+/// connect a UDP socket (that only picks a route, sends nothing) and ask
+/// it for its local address.
+pub(crate) fn local_source_ip(target: Ipv4Addr) -> Result<Ipv4Addr, String> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("could not bind a probe socket: {}", e))?;
+    socket
+        .connect(SocketAddr::new(IpAddr::V4(target), 9))
+        .map_err(|e| format!("could not pick a route to {}: {}", target, e))?;
+    match socket
+        .local_addr()
+        .map_err(|e| format!("could not read the local address: {}", e))?
+        .ip()
+    {
+        IpAddr::V4(v4) => Ok(v4),
+        IpAddr::V6(_) => Err("routing picked an IPv6 source for an IPv4 target".to_string()),
+    }
 }
 
 #[cfg(test)]
