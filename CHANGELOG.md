@@ -4,6 +4,22 @@ All notable changes to scouter26 are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project sticks to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-10-25
+
+### Added
+- Distribution infrastructure: every version tag now triggers an automated
+  release — prebuilt binaries for x86_64 **and** aarch64, a Debian `.deb`
+  (via cargo-deb) and an RPM (via cargo-generate-rpm), all attached to a
+  GitHub Release. Both packages were built and inspected locally before
+  shipping this workflow.
+- crates.io publication metadata (keywords, categories, readme, minimum
+  supported Rust) — `cargo install scouter26` comes with the first publish;
+  `cargo binstall scouter26` already works via release-tarball naming.
+- Arch packaging kit: `packaging/PKGBUILD` (`scouter26-bin`) with AUR
+  publishing instructions in `packaging/README.md` — including the honest
+  reasoning for *not* shipping a Flatpak.
+- README installation section rewritten to cover every install path.
+
 ## [0.9.0] - 2026-10-25
 
 ### Fixed

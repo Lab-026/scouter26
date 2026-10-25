@@ -194,15 +194,54 @@ $ sudo scouter26 syn 192.168.1.1 --ports 22,80,443
 
 ## Installation
 
-Requires Rust.
+Pick whichever fits your distro — or the plain binary, which works everywhere.
+Prebuilt packages are attached automatically to every
+[GitHub Release](https://github.com/Lab-026/scouter26/releases) — no Rust
+required for any of the methods below.
+
+**Debian, Ubuntu, Mint, Kali (.deb):**
 
 ```text
-git clone https://github.com/Lab-026/scouter26.git
-cd scouter26
-cargo install --path .
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-amd64.deb
+sudo apt install ./scouter26-amd64.deb
 ```
 
-After that, `scouter26` works from any directory.
+**Fedora, RHEL, openSUSE (.rpm):**
+
+```text
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64.rpm
+sudo dnf install ./scouter26-x86_64.rpm
+```
+
+**Arch, Manjaro, EndeavourOS (AUR kit):**
+
+The [packaging/PKGBUILD](packaging/PKGBUILD) builds a `scouter26-bin`
+package from the official release tarball — local install and AUR
+publishing steps are in [packaging/README.md](packaging/README.md).
+
+**Plain binary, any distro (x86_64 or aarch64):**
+
+```text
+wget https://github.com/Lab-026/scouter26/releases/latest/download/scouter26-x86_64-unknown-linux-gnu.tar.gz
+tar xf scouter26-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m755 scouter26 /usr/local/bin/
+```
+
+**Any system with Rust:**
+
+```text
+cargo install --locked scouter26
+```
+
+(available once scouter26 makes its first crates.io publish; `cargo
+binstall scouter26` already works with the release tarballs)
+
+> **Note:** The official Debian, Fedora and Arch *repositories* have their
+> own review processes — that milestone (scouter26 in `apt`, `dnf` and the
+> AUR proper) is documented as a future goal in
+> [packaging/README.md](packaging/README.md). Today's packages install
+> directly from GitHub Releases. There is deliberately no Flatpak: see the
+> reasoning in [packaging/README.md](packaging/README.md).
 
 ## Building and testing
 

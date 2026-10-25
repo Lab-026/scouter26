@@ -1,10 +1,17 @@
 [package]
 name = "scouter26"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 description = "A modular network toolbox: subnet math, port lookup, parallel TCP scan"
+readme = "README.md"
 license = "MIT"
 repository = "https://github.com/Lab-026/scouter26"
+keywords = ["network", "scanner", "cli", "subnet", "security"]
+categories = ["command-line-utilities", "network-programming"]
+# We build raw packets with slice::as_chunks, which is newer than the
+# edition-2024 baseline — state the true floor so old toolchains get a
+# clear message instead of a cryptic error.
+rust-version = "1.90"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -16,6 +23,47 @@ serde_json = "1"
 # Raw system calls: SYN scanning needs raw sockets (socket/sendto/setsockopt),
 # which the standard library does not expose. This is the boss fight.
 libc = "0.2"
+
+# --- Debian package (.deb), built by `cargo deb` ---
+# Users install with: sudo apt install ./scouter26_*.deb
+[package.metadata.deb]
+maintainer = "Umar Farooq <deadmansearching@tutamail.com>"
+copyright = "2026, Umar Farooq"
+extended-description = """\
+A modular network toolbox for IT support technicians and junior network \
+administrators. Subnet math for IPv4 and IPv6, a well-known-port reference \
+table, parallel TCP connect scanning with banner grabbing, UDP service \
+probing with open|filtered verdicts, half-open SYN scanning over raw \
+sockets, and TCP host discovery across a subnet — all with human and \
+JSON output."""
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/scouter26", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/scouter26/", "644"],
+    ["LICENSE", "usr/share/doc/scouter26/", "644"],
+]
+
+# --- Fedora/openSUSE package (.rpm), built by `cargo generate-rpm` ---
+# Users install with: sudo dnf install ./scouter26-*.rpm
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "A modular network toolbox: subnet math, port lookup, parallel TCP scan"
+group = "Applications/Internet"
+assets = [
+    { source = "target/release/scouter26", dest = "/usr/bin/scouter26", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/scouter26/README.md", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/doc/scouter26/LICENSE", mode = "644", doc = true },
+]
+
+# --- Prebuilt-binary installs via cargo-binstall ---
+# Once a release ships tarballs named as below, users on any distro can
+# skip compiling: `cargo binstall scouter26`
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }"
 
 # Makes the release binary smaller and faster:
 #   lto           = optimize across the whole program, not file by file

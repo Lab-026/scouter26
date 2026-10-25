@@ -1,0 +1,28 @@
+# Maintainer: Umar Farooq <deadmansearching@tutamail.com>
+# AUR package name: scouter26-bin
+#
+# Installs the official prebuilt release binary. For a from-source build
+# on Arch, `cargo install --locked scouter26` (after the crates.io
+# publish) does the same job without this file.
+pkgname=scouter26-bin
+pkgver=0.10.0
+pkgrel=1
+pkgdesc="A modular network toolbox: subnet math, port lookup, parallel TCP scan"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Lab-026/scouter26"
+license=('MIT')
+depends=('glibc')
+provides=('scouter26')
+conflicts=('scouter26' 'scouter26-git')
+
+source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.gz::https://github.com/Lab-026/scouter26/releases/download/v${pkgver}/scouter26-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.gz::https://github.com/Lab-026/scouter26/releases/download/v${pkgver}/scouter26-${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+# Refresh with `updpkgsums` after every version bump — never ship SKIP.
+sha256sums_x86_64=('REPLACE_WITH_UPDPKGSUMS')
+sha256sums_aarch64=('REPLACE_WITH_UPDPKGSUMS')
+
+package() {
+    install -Dm755 "${srcdir}/scouter26" "${pkgdir}/usr/bin/scouter26"
+    install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 "${srcdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
