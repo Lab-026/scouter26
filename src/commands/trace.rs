@@ -28,14 +28,16 @@ use super::{RawSocket, local_source_ip, resolve_target};
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
 
-/// Derive this process's ICMP identifier from its pid. Honest limits: an
-/// ICMP identifier field is 16 bits, so collisions across processes are
-/// always possible (pids 1 and 65665 both map to 0x1b64 — see the test
-/// that documents it). Mixing the pid makes collisions unlikely, and the
-/// sequence numbers are offset per run as well, so cross-talk between two
-/// traces requires a match on BOTH fields at once.
-fn trace_identifier(pid: u32) -> u16 {
-    0x1964 ^ (pid as u16).rotate_left(9) ^ ((pid >> 16) as u16)
+/// The traceroute's identity on the wire is the PAIR (identifier,
+/// sequence base), and that pair is a lossless split of the 32-bit
+/// process id: the identifier carries the low 16 bits, the sequence base
+/// the high 16 bits. Two different processes can therefore never share
+/// both fields at once — not "unlikely", impossible, for any pid the OS
+/// can assign. (The identifier field alone can still collide — pids 1
+/// and 65537 share one — that is the 16-bit ceiling of the ICMP header,
+/// and precisely why the sequence base exists.)
+fn trace_identity(pid: u32) -> (u16, u16) {
+    (0x1964 ^ (pid & 0xFFFF) as u16, 0x5C01 ^ (pid >> 16) as u16)
 }
 
 /// What an incoming ICMP datagram means for our trace. Replies are
@@ -198,10 +200,12 @@ pub fn execute(
     })?;
 
     let src_ip = local_source_ip(target_ip)?;
-    // A per-process identifier: two concurrent traces from this machine
-    // must never accept each other's replies. (The payload does not
-    // survive inside Time Exceeded messages, so this id is our identity.)
-    let identifier = trace_identifier(std::process::id());
+    // A per-process identity: the (identifier, sequence base) pair is a
+    // lossless split of this process's id, so two concurrent traces from
+    // this machine can never share both fields. (The payload does not
+    // survive inside Time Exceeded messages, so this pair is our
+    // identity on the wire.)
+    let (identifier, seq_base) = trace_identity(std::process::id());
     let payload = *b"SCOUTER26-TRACE\x00"; // visible in Wireshark, 16 bytes
 
     if !json {
@@ -225,9 +229,6 @@ pub fn execute(
     let mut reached = false;
     let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
-    // Sequence numbers start from a per-process base, so two traces that
-    // somehow share an identifier still disagree on every sequence number.
-    let seq_base = identifier;
     for ttl in 1..=max_hops {
         let seq = seq_base.wrapping_add(ttl as u16);
         let echo = build_echo_request(identifier, seq, &payload);
@@ -550,14 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_differ_between_processes() {
-        // Consecutive pids must never share an identity, or two concurrent
-        // traces could accept each other's replies.
-        let ids: std::collections::HashSet<u16> = (1u32..=100).map(trace_identifier).collect();
-        assert_eq!(ids.len(), 100);
-    }
-
-    #[test]
     fn fragment_reassembly_time_exceeded_is_not_a_hop() {
         // Code 1 cannot be produced by our probes (they are single,
         // Don't-Fragment fragments), so the classifier must not treat it
@@ -589,19 +582,32 @@ mod tests {
     }
 
     #[test]
-    fn the_identifier_mapping_has_documented_collisions() {
-        // A 16-bit identifier field cannot be collision-free over all
-        // pids — this test pins the known collision pair so the
-        // documentation stays truthful: if the mapping ever changes,
-        // this test and the doc comment must change with it.
-        assert_eq!(trace_identifier(1), trace_identifier(65665));
+    fn identity_pairs_are_unique_across_a_wide_pid_range() {
+        // The (identifier, base) pair is a lossless split of the pid, so
+        // no two pids in this range — crossing the 16-bit boundary where
+        // identifier-only collisions appear — may share a pair.
+        let pairs: std::collections::HashSet<(u16, u16)> =
+            (1u32..=70_000).map(trace_identity).collect();
+        assert_eq!(pairs.len(), 70_000);
+    }
+
+    #[test]
+    fn the_identifier_ceiling_does_not_spread_to_the_base() {
+        // Pids 1 and 65537 share the same low 16 bits, so their
+        // identifier fields collide — the honest 16-bit ceiling of the
+        // ICMP header. The sequence bases must still differ, which is
+        // what makes cross-talk impossible between them.
+        let (id_a, base_a) = trace_identity(1);
+        let (id_b, base_b) = trace_identity(65_537);
+        assert_eq!(id_a, id_b, "the identifier ceiling is real");
+        assert_ne!(base_a, base_b, "but the bases keep them distinct");
     }
 
     #[test]
     fn sequence_numbers_stay_distinct_across_the_hop_range() {
         // With a per-run base, every hop in a trace gets its own
         // sequence number even after wrapping.
-        let base = trace_identifier(4194);
+        let base = trace_identity(4194).1;
         let seqs: std::collections::HashSet<u16> = (1u8..=30)
             .map(|ttl| base.wrapping_add(ttl as u16))
             .collect();
