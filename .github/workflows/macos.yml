@@ -1,0 +1,32 @@
+# Experimental macOS build: run separately from the CI badge so that
+# macOS runner queue times and cancellations (a GitHub capacity issue, not
+# a code issue) can never turn the Linux badge red. Failures here are
+# reported in this workflow's own history, with the build output published
+# to the public job summary for review without signing in.
+
+name: macOS experiment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (output captured for public review)
+        run: cargo build 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Test
+        run: cargo test 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+      - name: Publish output to the job summary
+        if: always()
+        run: |
+          echo "## macOS experiment output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          tail -60 build.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          tail -60 test.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
