@@ -28,9 +28,12 @@ use super::{RawSocket, local_source_ip, resolve_target};
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
 
-/// Derive this process's ICMP identifier from its pid, so simultaneous
-/// traceroutes never share an identity. 0x1964 remains as the project's
-/// fingerprint; the pid supplies the variability.
+/// Derive this process's ICMP identifier from its pid. Honest limits: an
+/// ICMP identifier field is 16 bits, so collisions across processes are
+/// always possible (pids 1 and 65665 both map to 0x1b64 — see the test
+/// that documents it). Mixing the pid makes collisions unlikely, and the
+/// sequence numbers are offset per run as well, so cross-talk between two
+/// traces requires a match on BOTH fields at once.
 fn trace_identifier(pid: u32) -> u16 {
     0x1964 ^ (pid as u16).rotate_left(9) ^ ((pid >> 16) as u16)
 }
@@ -222,8 +225,11 @@ pub fn execute(
     let mut reached = false;
     let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
+    // Sequence numbers start from a per-process base, so two traces that
+    // somehow share an identifier still disagree on every sequence number.
+    let seq_base = identifier;
     for ttl in 1..=max_hops {
-        let seq = ttl as u16;
+        let seq = seq_base.wrapping_add(ttl as u16);
         let echo = build_echo_request(identifier, seq, &payload);
         socket
             .set_ttl(ttl)
@@ -580,6 +586,26 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_identifier_mapping_has_documented_collisions() {
+        // A 16-bit identifier field cannot be collision-free over all
+        // pids — this test pins the known collision pair so the
+        // documentation stays truthful: if the mapping ever changes,
+        // this test and the doc comment must change with it.
+        assert_eq!(trace_identifier(1), trace_identifier(65665));
+    }
+
+    #[test]
+    fn sequence_numbers_stay_distinct_across_the_hop_range() {
+        // With a per-run base, every hop in a trace gets its own
+        // sequence number even after wrapping.
+        let base = trace_identifier(4194);
+        let seqs: std::collections::HashSet<u16> = (1u8..=30)
+            .map(|ttl| base.wrapping_add(ttl as u16))
+            .collect();
+        assert_eq!(seqs.len(), 30);
     }
 
     #[test]

@@ -193,13 +193,12 @@ impl RawSocket {
     }
 
     pub(crate) fn send(&self, packet: &[u8], dst: Ipv4Addr) -> Result<(), io::Error> {
-        let addr = libc::sockaddr_in {
-            sin_family: libc::AF_INET as libc::sa_family_t,
-            sin_port: 0, // ignored: the port lives in the header we built
-            sin_addr: libc::in_addr {
-                s_addr: u32::from_ne_bytes(dst.octets()),
-            },
-            sin_zero: [0; 8],
+        // Zeroed first — see ping.rs for why (Darwin's extra sin_len).
+        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_port = 0; // ignored: the port lives in the header we built
+        addr.sin_addr = libc::in_addr {
+            s_addr: u32::from_ne_bytes(dst.octets()),
         };
         unsafe {
             let sent = libc::sendto(

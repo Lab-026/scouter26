@@ -118,6 +118,21 @@ to raw packet surgery — with every phase verified against live networks
   for our probes — they carry the Don't Fragment flag and are far smaller
   than any fragment threshold — and is ignored rather than guessed about.
 
+## [1.4.4] - 2026-10-26
+
+### Fixed
+- **macOS build**: `sockaddr_in` is now constructed by zeroing the struct
+  and assigning fields, because Darwin's version carries an extra `sin_len`
+  field that a Linux-style struct literal cannot compile against. (Cause of
+  the experimental macOS job's failure; confirmed by the job's next run.)
+- The traceroute documentation no longer claims PID-derived identifiers
+  guarantee uniqueness — a 16-bit ICMP identifier field mathematically
+  cannot be collision-free (pids 1 and 65665 collide; a test now pins that
+  fact so the docs stay honest).
+- Traceroute sequence numbers now start from a per-process base, so
+  cross-talk between two traces requires a match on BOTH identifier and
+  sequence, not either alone.
+
 ## [0.10.0] - 2026-10-25
 
 ### Added

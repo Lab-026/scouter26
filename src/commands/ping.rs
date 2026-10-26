@@ -100,13 +100,14 @@ impl IcmpSocket {
             IpAddr::V4(v4) => v4,
             IpAddr::V6(_) => unreachable!("ping sockets are IPv4"),
         };
-        let addr = libc::sockaddr_in {
-            sin_family: libc::AF_INET as libc::sa_family_t,
-            sin_port: 0, // ICMP has no ports
-            sin_addr: libc::in_addr {
-                s_addr: u32::from_ne_bytes(v4.octets()),
-            },
-            sin_zero: [0; 8],
+        // Built by zeroing first: Darwin's sockaddr_in carries an extra
+        // sin_len field that Linux lacks, and a zeroed struct compiles and
+        // behaves correctly on both.
+        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_port = 0; // ICMP has no ports
+        addr.sin_addr = libc::in_addr {
+            s_addr: u32::from_ne_bytes(v4.octets()),
         };
         unsafe {
             if libc::connect(
