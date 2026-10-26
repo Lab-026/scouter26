@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use super::ports;
 use super::{
-    MAX_WORKERS, PROGRESS_THRESHOLD, parse_ports, resolve_target, unlock, validate_tunables,
+    MAX_WORKERS, PROGRESS_THRESHOLD, atomic_bool, parse_ports, resolve_target, unlock,
+    validate_tunables,
 };
 
 /// One scan result: a port number plus whatever banner the service
@@ -104,12 +105,15 @@ fn scan_ports(
     let tried = Arc::new(AtomicUsize::new(0));
 
     // Live progress for long scans: one line, updated in place with \r.
-    // The loop re-checks `tried` after every sleep, so it always stops
-    // once the last port has been attempted.
+    // The loop stops when every port has been dispatched, or the moment
+    // the workers are declared finished — whichever comes first. (A
+    // worker that panics mid-probe must not strand this line forever.)
+    let finished = Arc::new(atomic_bool());
     let progress_thread = if show_progress && total >= PROGRESS_THRESHOLD {
         let tried = Arc::clone(&tried);
+        let finished = Arc::clone(&finished);
         Some(thread::spawn(move || {
-            while tried.load(Ordering::Relaxed) < total {
+            while !finished.load(Ordering::Relaxed) && tried.load(Ordering::Relaxed) < total {
                 print!(
                     "\r [..] {} / {} ports tried",
                     tried.load(Ordering::Relaxed),
@@ -142,6 +146,11 @@ fn scan_ports(
                     None => break, // to-do list is empty - work is done
                 };
 
+                // Counted as dispatched the moment it leaves the queue: a
+                // worker that panics mid-probe must not strand the progress
+                // line waiting for a count that can never complete.
+                tried.fetch_add(1, Ordering::Relaxed);
+
                 let address = SocketAddr::from((target, port));
                 if let Ok(stream) = TcpStream::connect_timeout(&address, timeout) {
                     let banner = grab_banner(stream);
@@ -150,13 +159,11 @@ fn scan_ports(
                         .unwrap_or_else(unlock)
                         .push((port, banner));
                 }
-
-                tried.fetch_add(1, Ordering::Relaxed);
             }
         }));
     }
 
-    // Wait for every worker to finish.
+    // Wait for every worker to finish, then release the progress thread.
     for worker in workers_handles {
         if worker.join().is_err() {
             eprintln!(

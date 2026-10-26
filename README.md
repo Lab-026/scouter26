@@ -313,7 +313,8 @@ $ scouter26 udp 192.168.1.1
 
 - `--ports`, `--timeout`, `--workers`, `--ipv6`, `--json` as in `scan`;
   silent ports are probed twice (the retransmit is how closed ports get
-  noticed — the kernel delivers the ICMP verdict to the next syscall)
+  noticed — the kernel delivers the ICMP verdict to the next syscall), so
+  a silent port can consume up to twice the configured timeout
 - Sweeping huge UDP ranges is self-defeating: the target's ICMP rate
   limit makes closed ports look filtered. Keep lists small.
 

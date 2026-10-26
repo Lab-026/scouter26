@@ -121,6 +121,18 @@ to raw packet surgery — with every phase verified against live networks
 ## [1.4.4] - 2026-10-26
 
 ### Fixed
+- **Progress lines can no longer hang**: a worker that panicked mid-probe
+  could leave the progress counter short of the total forever (scan, udp
+  and discover shared the pattern). Work is now counted at dispatch time,
+  and the progress thread is released the moment the workers are joined.
+- **UDP timeout semantics documented**: a silent port can consume up to
+  twice the configured `--timeout`, because each silent port is probed
+  twice — now stated in the CLI help and README.
+- **Traceroute replay resistance**: sequence numbers are mixed with a
+  per-run nonce, so delayed replies from an earlier run (even after pid
+  reuse) no longer match; the identity comments now also state plainly
+  that the checks separate our traffic from unrelated traffic and are not
+  cryptographic authentication.
 - **macOS build**: `sockaddr_in` is now constructed by zeroing the struct
   and assigning fields, because Darwin's version carries an extra `sin_len`
   field that a Linux-style struct literal cannot compile against. (Cause of

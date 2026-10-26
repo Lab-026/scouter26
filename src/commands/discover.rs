@@ -149,10 +149,15 @@ fn sweep(
     let alive: Arc<Mutex<HashMap<IpAddr, Vec<u16>>>> = Arc::new(Mutex::new(HashMap::new()));
     let tried = Arc::new(AtomicUsize::new(0));
 
+    // The finished flag releases the progress line the moment the workers
+    // are joined, even if a panic left the counters short of the total.
+    let finished = super::atomic_bool();
     let progress_thread = if show_progress && total_probes >= PROGRESS_THRESHOLD {
         let tried = Arc::clone(&tried);
+        let finished = Arc::clone(&finished);
         Some(thread::spawn(move || {
-            while tried.load(Ordering::Relaxed) < total_probes {
+            while !finished.load(Ordering::Relaxed) && tried.load(Ordering::Relaxed) < total_probes
+            {
                 print!(
                     "\r [..] {} / {} probes sent",
                     tried.load(Ordering::Relaxed),
@@ -181,6 +186,10 @@ fn sweep(
                     None => break, // to-do list is empty - work is done
                 };
 
+                // Counted as dispatched the moment it leaves the queue:
+                // a worker that panics mid-probe must not strand the
+                // progress line waiting for an impossible count.
+                tried.fetch_add(1, Ordering::Relaxed);
                 match probe(task.host, task.port, timeout) {
                     ProbeVerdict::Open => {
                         alive
@@ -199,13 +208,11 @@ fn sweep(
                     }
                     ProbeVerdict::NoAnswer => {}
                 }
-
-                tried.fetch_add(1, Ordering::Relaxed);
             }
         }));
     }
 
-    // Wait for every worker to finish.
+    // Wait for every worker to finish, then release the progress thread.
     for handle in handles {
         if handle.join().is_err() {
             eprintln!(
@@ -214,6 +221,7 @@ fn sweep(
             );
         }
     }
+    finished.store(true, Ordering::Relaxed);
 
     if let Some(progress) = progress_thread {
         progress.join().ok();

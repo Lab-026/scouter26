@@ -198,10 +198,14 @@ fn sweep(
     let tried = Arc::new(AtomicUsize::new(0));
     let socket_errors = Arc::new(AtomicUsize::new(0));
 
+    // The finished flag releases the progress line the moment the workers
+    // are joined, even if a panic left the counters short of the total.
+    let finished = super::atomic_bool();
     let progress_thread = if show_progress && total >= PROGRESS_THRESHOLD {
         let tried = Arc::clone(&tried);
+        let finished = Arc::clone(&finished);
         Some(thread::spawn(move || {
-            while tried.load(Ordering::Relaxed) < total {
+            while !finished.load(Ordering::Relaxed) && tried.load(Ordering::Relaxed) < total {
                 print!(
                     "\r [..] {} / {} probes sent",
                     tried.load(Ordering::Relaxed),
@@ -229,9 +233,12 @@ fn sweep(
                     Some(port) => port,
                     None => break,
                 };
+                // Counted as dispatched the moment it leaves the queue: a
+                // worker that panics mid-probe must not strand the
+                // progress line waiting for an impossible count.
+                tried.fetch_add(1, Ordering::Relaxed);
                 let verdict = udp_probe(target, port, timeout, &socket_errors);
                 results.lock().unwrap_or_else(unlock).push((port, verdict));
-                tried.fetch_add(1, Ordering::Relaxed);
             }
         }));
     }
@@ -241,6 +248,7 @@ fn sweep(
             eprintln!("{}", "Warning: a UDP worker exited unexpectedly".yellow());
         }
     }
+    finished.store(true, Ordering::Relaxed);
 
     if let Some(progress) = progress_thread {
         progress.join().ok();

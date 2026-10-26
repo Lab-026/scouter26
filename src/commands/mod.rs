@@ -12,6 +12,7 @@ pub mod udp;
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The hard ceiling for --workers in the scanning commands. Beyond a few
@@ -86,6 +87,13 @@ pub(crate) fn internet_checksum(data: &[u8]) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
     !(sum as u16)
+}
+
+/// A finished flag shared with a progress thread, so the line can be
+/// released the moment the workers are done even if a panic left the
+/// counters short of the total.
+pub(crate) fn atomic_bool() -> Arc<std::sync::atomic::AtomicBool> {
+    Arc::new(std::sync::atomic::AtomicBool::new(false))
 }
 
 /// A lock() only fails when a thread panicked while holding it

@@ -67,7 +67,13 @@ pub(crate) struct ProbeIdentity {
 }
 
 impl ProbeIdentity {
-    pub(crate) fn new(pid: u32, source: Ipv4Addr, destination: Ipv4Addr, ttl: u8) -> Self {
+    pub(crate) fn new(
+        pid: u32,
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        ttl: u8,
+        run_nonce: u16,
+    ) -> Self {
         let (id, base) = trace_identity(pid);
         ProbeIdentity {
             id,
@@ -75,7 +81,12 @@ impl ProbeIdentity {
             source,
             destination,
             ttl,
-            seq: base.wrapping_add(ttl as u16),
+            // The run nonce decorrelates sequence numbers across runs: a
+            // delayed reply from an earlier trace (even after pid reuse)
+            // carries a sequence derived from a different nonce, and is
+            // rejected. XOR is a bijection, so per-hop distinctness within
+            // one run is preserved.
+            seq: base.wrapping_add(ttl as u16) ^ run_nonce,
         }
     }
 }
@@ -89,6 +100,18 @@ fn trace_payload(pid: u32, ttl: u8) -> [u8; 16] {
     payload[8..12].copy_from_slice(&pid.to_be_bytes());
     payload[12..14].copy_from_slice(&(ttl as u16).to_be_bytes());
     payload
+}
+
+/// A per-run value mixed into the sequence numbers: two traces started at
+/// different times — or the same pid reused after it exited — get
+/// different sequence spaces, so delayed replies from an earlier run are
+/// rejected. Not cryptographic: just decorrelation.
+fn run_nonce(pid: u32) -> u16 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u16;
+    nanos ^ (pid as u16) ^ ((pid >> 16) as u16)
 }
 
 /// What an incoming ICMP datagram means for our trace. Every classification
@@ -157,8 +180,11 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], probe: &ProbeIdentity) -> Op
             // identifier and sequence still live. Before trusting any of
             // that, the embedded packet must prove it is *ours*: sane IPv4
             // ICMP, sent from our address, to the destination we are
-            // tracing. A forged or unrelated Time Exceeded embeds a probe
-            // that was never ours, and fails here.
+            // tracing, at this hop's TTL. An unrelated Time Exceeded
+            // embeds a probe that was never ours and fails here. (These
+            // checks separate our traffic from unrelated traffic; they are
+            // not cryptographic authentication — the wire format is
+            // public.)
             if icmp.len() < 8 + 28 {
                 return None;
             }
@@ -262,6 +288,7 @@ pub fn execute(
     // survive inside Time Exceeded messages, so this pair is our
     // identity on the wire.)
     let pid = std::process::id();
+    let run_nonce = run_nonce(pid);
 
     if !json {
         println!("{}", "========================================".cyan());
@@ -285,7 +312,7 @@ pub fn execute(
     let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
     for ttl in 1..=max_hops {
-        let probe = ProbeIdentity::new(pid, src_ip, target_ip, ttl);
+        let probe = ProbeIdentity::new(pid, src_ip, target_ip, ttl, run_nonce);
         let echo = build_echo_request(probe.id, probe.seq, &trace_payload(pid, ttl));
         socket
             .set_ttl(ttl)

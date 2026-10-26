@@ -128,7 +128,8 @@ pub enum Commands {
         /// Default: 53, 69, 123, 137, 161, 514.
         #[arg(short, long)]
         ports: Option<String>,
-        /// Seconds to wait per attempt; silent ports are probed twice
+        /// Seconds to wait per attempt; silent ports are probed twice,
+        /// so one can consume up to twice this value
         #[arg(long, default_value_t = 1.0)]
         timeout: f64,
         /// How many probes to send at the same time (1-2000)
