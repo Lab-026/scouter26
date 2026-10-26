@@ -129,13 +129,15 @@ to raw packet surgery — with every phase verified against live networks
   twice the configured `--timeout`, because each silent port is probed
   twice — now stated in the CLI help and README.
 - **Traceroute replay resistance**: sequence numbers are mixed with a
-  per-run nonce, and Echo Replies now verify a 64-bit per-run token carried
-  in the payload — a reply from an earlier run (same pid, destination and
-  hop) is rejected even when everything else matches. Honest limits, stated
-  in the docs: the 16-bit sequence nonce only *reduces* cross-run matches
-  (it cannot guarantee rejection, and Time Exceeded messages are too short
-  to carry the token), and none of these checks are cryptographic
-  authentication — the wire format is public.
+  per-run nonce, and Echo Replies now verify a 64-bit per-run token —
+  OS-seeded via std's RandomState, mixed with the pid — carried in the
+  payload. A reply from an earlier run (same pid, destination and hop) is
+  rejected when its token differs. Honest limits, stated in the docs: the
+  token makes accidental cross-run matches astronomically unlikely but is
+  not a uniqueness guarantee; the 16-bit sequence nonce only *reduces*
+  cross-run matches (it cannot guarantee rejection, and Time Exceeded
+  messages are too short to carry the token); and none of these checks are
+  cryptographic authentication — the wire format is public.
 - **scan.rs progress flag**: the TCP scanner was missing the
   `finished.store(true)` that udp and discover already had after joining
   their workers — found by external review, fixed for consistency.

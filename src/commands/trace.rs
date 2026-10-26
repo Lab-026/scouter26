@@ -13,11 +13,12 @@
 //! with their IP headers intact, and are classified by hand against the
 //! probe's FULL identity: identifier, sequence, source and destination
 //! addresses, the TTL, and — because Echo Replies carry the payload back
-//! verbatim — the probe's embedded process id. Time Exceeded messages
-//! truncate the payload, but they embed the original IP header, which
-//! still carries our source, destination and TTL, and those are checked
-//! too. Matching less than the full identity would let two concurrent
-//! traces (or a forged packet) impersonate each other.
+//! verbatim — the probe's embedded process id and per-run token. Time
+//! Exceeded messages truncate the payload, but they embed the original IP
+//! header, which still carries our source, destination and TTL, and those
+//! are checked too. Matching less than the full identity would let
+//! unrelated or replayed replies be misattributed. These checks reject
+//! mismatched traffic; they do not authenticate the sender.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -124,16 +125,24 @@ fn run_nonce(pid: u32) -> u16 {
 }
 
 /// A 64-bit per-run token, carried in the probe payload and verified in
-/// every Echo Reply. Time Exceeded messages quote only the original IP
-/// header and the first eight ICMP bytes, so the token cannot travel in
-/// them — cross-run protection there rests on the 16-bit sequence nonce,
-/// and the docs say so.
+/// every Echo Reply. The base value is drawn from the operating system
+/// (std's RandomState is OS-seeded — the strongest randomness the
+/// standard library offers without adding a dependency), then mixed with
+/// the pid. This makes accidental cross-run token matches astronomically
+/// unlikely; it is still not cryptographic authentication. Time Exceeded
+/// messages quote only the original IP header and the first eight ICMP
+/// bytes, so the token cannot travel in them — cross-run protection there
+/// rests on the 16-bit sequence nonce, and the docs say so.
 fn run_token(pid: u32) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let os = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64;
-    nanos ^ ((pid as u64) << 32) ^ ((pid as u64).rotate_left(17))
+    os ^ nanos ^ ((pid as u64) << 32) ^ ((pid as u64).rotate_left(17))
 }
 
 /// What an incoming ICMP datagram means for our trace. Every classification
