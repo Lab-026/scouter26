@@ -54,6 +54,10 @@ pub(crate) struct ProbeIdentity {
     /// The full process id — carried in the probe payload and verified in
     /// Echo Replies, which return the payload verbatim.
     pid: u32,
+    /// The 64-bit per-run token — also carried in the payload and
+    /// verified in Echo Replies; this is what rejects replies from an
+    /// earlier run even when everything else matches.
+    token: u64,
     /// Our address: validated as the embedded source in Time Exceeded.
     source: Ipv4Addr,
     /// The traced destination: validated as the source of Echo Replies
@@ -73,19 +77,21 @@ impl ProbeIdentity {
         destination: Ipv4Addr,
         ttl: u8,
         run_nonce: u16,
+        token: u64,
     ) -> Self {
         let (id, base) = trace_identity(pid);
         ProbeIdentity {
             id,
             pid,
+            token,
             source,
             destination,
             ttl,
             // The run nonce decorrelates sequence numbers across runs: a
-            // delayed reply from an earlier trace (even after pid reuse)
-            // carries a sequence derived from a different nonce, and is
-            // rejected. XOR is a bijection, so per-hop distinctness within
-            // one run is preserved.
+            // delayed reply from an earlier trace carries a sequence
+            // derived from a different nonce, and is rejected. XOR is a
+            // bijection, so per-hop distinctness within one run is
+            // preserved.
             seq: base.wrapping_add(ttl as u16) ^ run_nonce,
         }
     }
@@ -94,24 +100,40 @@ impl ProbeIdentity {
 /// The probe payload: magic + full 32-bit pid + ttl. Echo Replies return
 /// it verbatim, which lets us verify a reply is truly ours even when the
 /// 16-bit identifier and sequence have aliased across processes.
-fn trace_payload(pid: u32, ttl: u8) -> [u8; 16] {
-    let mut payload = [0u8; 16];
+fn trace_payload(pid: u32, ttl: u8, token: u64) -> [u8; 24] {
+    let mut payload = [0u8; 24];
     payload[..8].copy_from_slice(b"SC26TRAC");
     payload[8..12].copy_from_slice(&pid.to_be_bytes());
     payload[12..14].copy_from_slice(&(ttl as u16).to_be_bytes());
+    payload[14..16].copy_from_slice(&0u16.to_be_bytes()); // reserved
+    payload[16..24].copy_from_slice(&token.to_be_bytes());
     payload
 }
 
-/// A per-run value mixed into the sequence numbers: two traces started at
-/// different times — or the same pid reused after it exited — get
-/// different sequence spaces, so delayed replies from an earlier run are
-/// rejected. Not cryptographic: just decorrelation.
+/// A per-run value mixed into the sequence numbers. Honest limits: it is
+/// 16 bits, so two runs can repeat it — this REDUCES accidental cross-run
+/// matches, it does not prevent them. The 64-bit run token (see
+/// run_token) carried in the payload is what Echo Replies validate for
+/// real cross-run replay rejection.
 fn run_nonce(pid: u32) -> u16 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos() as u16;
     nanos ^ (pid as u16) ^ ((pid >> 16) as u16)
+}
+
+/// A 64-bit per-run token, carried in the probe payload and verified in
+/// every Echo Reply. Time Exceeded messages quote only the original IP
+/// header and the first eight ICMP bytes, so the token cannot travel in
+/// them — cross-run protection there rests on the 16-bit sequence nonce,
+/// and the docs say so.
+fn run_token(pid: u32) -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    nanos ^ ((pid as u64) << 32) ^ ((pid as u64).rotate_left(17))
 }
 
 /// What an incoming ICMP datagram means for our trace. Every classification
@@ -149,7 +171,7 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], probe: &ProbeIdentity) -> Op
             // it must come from the traced destination, carry our
             // identifier and sequence, and echo back a payload containing
             // our full pid and this probe's TTL.
-            if icmp.len() < 8 + 16 {
+            if icmp.len() < 8 + 24 {
                 return None;
             }
             let id = u16::from_be_bytes([icmp[4], icmp[5]]);
@@ -157,10 +179,11 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], probe: &ProbeIdentity) -> Op
             if id != probe.id || seq != probe.seq || source != probe.destination {
                 return None;
             }
-            let payload = &icmp[8..8 + 16];
+            let payload = &icmp[8..8 + 24];
             if &payload[..8] != b"SC26TRAC"
                 || u32::from_be_bytes(payload[8..12].try_into().ok()?) != probe.pid
                 || u16::from_be_bytes(payload[12..14].try_into().ok()?) != probe.ttl as u16
+                || u64::from_be_bytes(payload[16..24].try_into().ok()?) != probe.token
             {
                 return None;
             }
@@ -289,6 +312,7 @@ pub fn execute(
     // identity on the wire.)
     let pid = std::process::id();
     let run_nonce = run_nonce(pid);
+    let token = run_token(pid);
 
     if !json {
         println!("{}", "========================================".cyan());
@@ -312,8 +336,8 @@ pub fn execute(
     let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
     for ttl in 1..=max_hops {
-        let probe = ProbeIdentity::new(pid, src_ip, target_ip, ttl, run_nonce);
-        let echo = build_echo_request(probe.id, probe.seq, &trace_payload(pid, ttl));
+        let probe = ProbeIdentity::new(pid, src_ip, target_ip, ttl, run_nonce, token);
+        let echo = build_echo_request(probe.id, probe.seq, &trace_payload(pid, ttl, token));
         socket
             .set_ttl(ttl)
             .map_err(|error| format!("could not set TTL {}: {}", ttl, error))?;
@@ -462,6 +486,7 @@ mod tests {
         ProbeIdentity {
             id: 0x1965,
             pid: 1,
+            token: 0xAAAA_0000_0000_0001,
             source: Ipv4Addr::new(192, 168, 18, 29),
             destination: Ipv4Addr::new(1, 1, 1, 1),
             ttl: 2,
@@ -473,9 +498,25 @@ mod tests {
         ProbeIdentity {
             id: 0x1965,
             pid: 65_537,
+            token: 0xBBBB_0000_0000_0002,
             source: Ipv4Addr::new(192, 168, 18, 29),
             destination: Ipv4Addr::new(1, 1, 1, 1),
             ttl: 1,
+            seq: 0x5C03,
+        }
+    }
+
+    fn probe_a_previous_run() -> ProbeIdentity {
+        // The same pid, destination, hop, identifier and sequence as
+        // probe_a — but from an earlier run, so the run token differs.
+        // This is the replay scenario the 64-bit token exists to reject.
+        ProbeIdentity {
+            id: 0x1965,
+            pid: 1,
+            token: 0xAAAA_0000_0000_0000,
+            source: Ipv4Addr::new(192, 168, 18, 29),
+            destination: Ipv4Addr::new(1, 1, 1, 1),
+            ttl: 2,
             seq: 0x5C03,
         }
     }
@@ -484,7 +525,7 @@ mod tests {
     /// IP header from the destination, then our echo reply with our full
     /// payload echoed back.
     fn echo_reply(from: [u8; 4], probe: &ProbeIdentity) -> Vec<u8> {
-        let payload = trace_payload(probe.pid, probe.ttl);
+        let payload = trace_payload(probe.pid, probe.ttl, probe.token);
         let mut datagram = vec![0u8; 20 + 8 + payload.len()];
         datagram[0] = 0x45;
         datagram[9] = 1; // ICMP
@@ -521,13 +562,17 @@ mod tests {
 
     #[test]
     fn probe_payloads_carry_the_full_identity() {
-        let payload = trace_payload(65_537, 3);
+        let payload = trace_payload(65_537, 3, 0x1234_5678_9ABC_DEF0);
         assert_eq!(&payload[..8], b"SC26TRAC");
         assert_eq!(
             u32::from_be_bytes(payload[8..12].try_into().unwrap()),
             65_537
         );
         assert_eq!(u16::from_be_bytes(payload[12..14].try_into().unwrap()), 3);
+        assert_eq!(
+            u64::from_be_bytes(payload[16..24].try_into().unwrap()),
+            0x1234_5678_9ABC_DEF0
+        );
     }
 
     #[test]
@@ -594,6 +639,23 @@ mod tests {
         let mut foreign_payload = echo_reply([1, 1, 1, 1], &probe_a());
         foreign_payload[32] ^= 0xFF; // corrupt the embedded pid
         assert!(classify_trace_reply(&foreign_payload, &probe_a()).is_none());
+
+        // An Echo Reply whose payload carries a different run token.
+        let mut stale_payload = echo_reply([1, 1, 1, 1], &probe_a());
+        stale_payload[40] ^= 0xFF; // corrupt the embedded run token
+        assert!(classify_trace_reply(&stale_payload, &probe_a()).is_none());
+    }
+
+    #[test]
+    fn an_echo_reply_from_a_previous_run_is_rejected() {
+        // Cross-run replay: same pid, destination, hop, identifier and
+        // sequence — only the run token differs. The reply from the
+        // earlier run must not be accepted as this run's answer.
+        let stale = echo_reply([1, 1, 1, 1], &probe_a_previous_run());
+        assert!(classify_trace_reply(&stale, &probe_a()).is_none());
+
+        let current = echo_reply([1, 1, 1, 1], &probe_a());
+        assert!(classify_trace_reply(&current, &probe_a()).is_some());
     }
 
     #[test]

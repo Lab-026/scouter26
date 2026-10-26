@@ -172,6 +172,7 @@ fn scan_ports(
             );
         }
     }
+    finished.store(true, Ordering::Relaxed);
 
     if let Some(progress) = progress_thread {
         progress.join().ok();
