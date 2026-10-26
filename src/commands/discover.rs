@@ -354,7 +354,9 @@ pub fn execute(
         workers,
         !json,
     );
-    let complete = status.is_complete(hosts.len());
+    // Compare against total PROBES (hosts x ports) — the dispatched
+    // counter counts individual probes, not hosts.
+    let complete = status.is_complete(total_probes);
 
     // Report: JSON for machines, the human table otherwise — and a saved
     // copy on disk whenever --output asks for one (the same JSON either

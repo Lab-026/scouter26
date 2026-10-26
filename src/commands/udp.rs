@@ -370,7 +370,7 @@ pub fn execute(
         eprintln!(
             "{}",
             format!(
-                " Warning: {} probe(s) could not create or use a socket and were counted as open|filtered.",
+                " Warning: {} probe(s) could not create or use a socket and were counted as unprobed.",
                 socket_errors
             )
             .yellow()

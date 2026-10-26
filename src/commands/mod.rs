@@ -381,6 +381,36 @@ mod tests {
     }
 
     #[test]
+    fn sweep_status_completeness_rules() {
+        use super::SweepStatus;
+        // All tasks dispatched, no failed joins: complete.
+        assert!(
+            SweepStatus {
+                dispatched: 50,
+                failed_joins: 0
+            }
+            .is_complete(50)
+        );
+        // Fewer tasks dispatched than planned: incomplete, whatever the
+        // failed-join count is.
+        assert!(
+            !SweepStatus {
+                dispatched: 10,
+                failed_joins: 0
+            }
+            .is_complete(50)
+        );
+        // Any failed join makes the sweep incomplete, even at full dispatch.
+        assert!(
+            !SweepStatus {
+                dispatched: 50,
+                failed_joins: 2
+            }
+            .is_complete(50)
+        );
+    }
+
+    #[test]
     fn unwritable_paths_fail_with_a_clear_message() {
         let result = write_report(
             std::path::Path::new("/nonexistent-dir-1964/report.json"),
