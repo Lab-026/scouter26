@@ -129,7 +129,7 @@ fn sweep(
     timeout: Duration,
     workers: usize,
     show_progress: bool,
-) -> Vec<(IpAddr, Vec<u16>)> {
+) -> (Vec<(IpAddr, Vec<u16>)>, super::SweepStatus) {
     let total_probes = hosts.len() * probe_ports.len();
     let worker_count = workers.clamp(1, MAX_WORKERS).min(total_probes.max(1));
 
@@ -213,8 +213,10 @@ fn sweep(
     }
 
     // Wait for every worker to finish, then release the progress thread.
+    let mut failed_joins = 0usize;
     for handle in handles {
         if handle.join().is_err() {
+            failed_joins += 1;
             eprintln!(
                 "{}",
                 "Warning: a discovery worker exited unexpectedly".yellow()
@@ -223,10 +225,22 @@ fn sweep(
     }
     finished.store(true, Ordering::Relaxed);
 
+    let dispatched = tried.load(Ordering::Relaxed);
     if let Some(progress) = progress_thread {
         progress.join().ok();
-        println!("\r [ok] {} / {} probes sent", total_probes, total_probes);
+        if dispatched >= total_probes && failed_joins == 0 {
+            println!("\r [ok] {} / {} probes sent", dispatched, total_probes);
+        } else {
+            println!(
+                "\r [!!] {} / {} probes dispatched — sweep ended early, results may be incomplete",
+                dispatched, total_probes
+            );
+        }
     }
+    let status = super::SweepStatus {
+        dispatched,
+        failed_joins,
+    };
 
     let mut results: Vec<(IpAddr, Vec<u16>)> = alive
         .lock()
@@ -238,7 +252,7 @@ fn sweep(
     for (_, open) in results.iter_mut() {
         open.sort_unstable();
     }
-    results
+    (results, status)
 }
 
 // ============================================================
@@ -260,6 +274,9 @@ struct DiscoverReport {
     hosts_probed: usize,
     probed_ports: Vec<u16>,
     duration_seconds: f32,
+    /// False when a worker failed or some hosts were never dispatched —
+    /// the reader should not trust the absence of ALIVE verdicts then.
+    complete: bool,
     live_hosts: Vec<HostFinding>,
 }
 
@@ -330,13 +347,14 @@ pub fn execute(
         );
     }
 
-    let results = sweep(
+    let (results, status) = sweep(
         &hosts,
         &probe_ports,
         Duration::from_secs_f64(timeout_secs),
         workers,
         !json,
     );
+    let complete = status.is_complete(hosts.len());
 
     // Report: JSON for machines, the human table otherwise — and a saved
     // copy on disk whenever --output asks for one (the same JSON either
@@ -347,6 +365,7 @@ pub fn execute(
             hosts_probed: hosts.len(),
             probed_ports: probe_ports,
             duration_seconds: started_at.elapsed().as_secs_f32(),
+            complete,
             live_hosts: results
                 .iter()
                 .map(|(ip, open_ports)| HostFinding {
@@ -407,6 +426,12 @@ pub fn execute(
         )
         .cyan()
     );
+    if !complete {
+        println!(
+            "{}",
+            " [!] the sweep ended early — a worker failed; results may be incomplete".red()
+        );
+    }
 
     Ok(())
 }
@@ -453,7 +478,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let open_port = listener.local_addr().unwrap().port();
 
-        let results = sweep(
+        let (results, _status) = sweep(
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
             &[open_port],
             Duration::from_millis(300),
@@ -474,7 +499,7 @@ mod tests {
         let closed_port = handle.local_addr().unwrap().port();
         drop(handle);
 
-        let results = sweep(
+        let (results, _status) = sweep(
             &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
             &[closed_port],
             Duration::from_millis(300),
@@ -496,6 +521,7 @@ mod tests {
             hosts_probed: 254,
             probed_ports: vec![22, 80],
             duration_seconds: 6.4,
+            complete: true,
             live_hosts: vec![HostFinding {
                 ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 open_ports: vec![80],
@@ -503,6 +529,7 @@ mod tests {
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["network"], "192.168.1.0/24");
+        assert_eq!(value["complete"], true);
         assert_eq!(value["hosts_probed"], 254);
         assert_eq!(value["live_hosts"][0]["ip"], "192.168.1.1");
         assert_eq!(value["live_hosts"][0]["open_ports"][0], 80);

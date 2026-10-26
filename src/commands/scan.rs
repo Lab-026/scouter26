@@ -39,6 +39,9 @@ struct ScanReport {
     timeout_seconds: f64,
     workers: usize,
     duration_seconds: f32,
+    /// False when a worker failed or some ports were never dispatched —
+    /// the reader should not trust the absence of OPEN verdicts then.
+    complete: bool,
     open_ports: Vec<PortFinding>,
 }
 
@@ -93,7 +96,7 @@ fn scan_ports(
     timeout: Duration,
     workers: usize,
     show_progress: bool,
-) -> Vec<ScanResult> {
+) -> (Vec<ScanResult>, super::SweepStatus) {
     let worker_count = workers.clamp(1, MAX_WORKERS).min(ports.len().max(1));
     let total = ports.len();
 
@@ -164,8 +167,10 @@ fn scan_ports(
     }
 
     // Wait for every worker to finish, then release the progress thread.
+    let mut failed_joins = 0usize;
     for worker in workers_handles {
         if worker.join().is_err() {
+            failed_joins += 1;
             eprintln!(
                 "{}",
                 "Warning: a scanner worker exited unexpectedly".yellow()
@@ -174,14 +179,26 @@ fn scan_ports(
     }
     finished.store(true, Ordering::Relaxed);
 
+    let dispatched = tried.load(Ordering::Relaxed);
     if let Some(progress) = progress_thread {
         progress.join().ok();
-        println!("\r [ok] {} / {} ports tried", total, total);
+        if dispatched >= total && failed_joins == 0 {
+            println!("\r [ok] {} / {} ports dispatched", dispatched, total);
+        } else {
+            println!(
+                "\r [!!] {} / {} ports dispatched — scan ended early, results may be incomplete",
+                dispatched, total
+            );
+        }
     }
+    let status = super::SweepStatus {
+        dispatched,
+        failed_joins,
+    };
 
     let mut results = open_ports.lock().unwrap_or_else(unlock).clone();
     results.sort_unstable_by_key(|entry| entry.0);
-    results
+    (results, status)
 }
 
 pub fn execute(
@@ -240,13 +257,14 @@ pub fn execute(
 
     // 4. Scan. Progress (if any) is handled inside scan_ports, and is
     //    suppressed in JSON mode so machines get a clean pipe.
-    let results = scan_ports(
+    let (results, status) = scan_ports(
         target_ip,
         &ports,
         Duration::from_secs_f64(timeout_secs),
         workers,
         !json,
     );
+    let complete = status.is_complete(ports.len());
 
     // 5. Report: JSON for machines, the banner table for humans.
     // Report: JSON for machines, the banner table for humans — and a
@@ -259,6 +277,7 @@ pub fn execute(
             timeout_seconds: timeout_secs,
             workers,
             duration_seconds: started_at.elapsed().as_secs_f32(),
+            complete,
             open_ports: results
                 .iter()
                 .map(|(port, banner)| PortFinding {
@@ -308,6 +327,12 @@ pub fn execute(
         )
         .cyan()
     );
+    if !complete {
+        println!(
+            "{}",
+            " [!] the scan ended early — a worker failed; results may be incomplete".red()
+        );
+    }
 
     Ok(())
 }
@@ -400,7 +425,7 @@ mod tests {
         let closed_port = closed_handle.local_addr().unwrap().port();
         drop(closed_handle);
 
-        let results = scan_ports(
+        let (results, _status) = scan_ports(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &[open_port, closed_port],
             Duration::from_millis(300),
@@ -425,7 +450,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
         let open_port = listener.local_addr().unwrap().port();
 
-        let results = scan_ports(
+        let (results, _status) = scan_ports(
             IpAddr::V6("::1".parse().unwrap()),
             &[open_port],
             Duration::from_millis(300),
@@ -446,6 +471,7 @@ mod tests {
             timeout_seconds: 1.0,
             workers: 200,
             duration_seconds: 0.5,
+            complete: true,
             open_ports: vec![PortFinding {
                 port: 22,
                 service: "ssh".to_string(),
@@ -454,6 +480,7 @@ mod tests {
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["target"], "example.test");
+        assert_eq!(value["complete"], true);
         assert_eq!(value["resolved_ip"], "192.0.2.1");
         assert_eq!(value["open_ports"][0]["port"], 22);
         assert_eq!(value["open_ports"][0]["service"], "ssh");

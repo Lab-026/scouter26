@@ -88,7 +88,9 @@ fn probe_payload(port: u16) -> &'static [u8] {
 
 /// The outcome of one UDP probe. Note there is no plain "open or
 /// closed" world: silence is genuinely ambiguous, and pretending
-/// otherwise would make the tool lie.
+/// otherwise would make the tool lie. And silence is not the only
+/// ambiguous outcome — a probe that could not even be sent is neither
+/// open, closed, nor filtered, and gets its own honest verdict.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UdpVerdict {
     /// The service answered — proof of life, plus how many bytes came back.
@@ -96,9 +98,14 @@ enum UdpVerdict {
     /// The host's kernel sent back ICMP port-unreachable: a machine is
     /// there and nothing listens on this port.
     Closed,
-    /// Silence. An open-but-quiet service and a filtering firewall look
-    /// identical over UDP, so the honest verdict is both at once.
+    /// The probe was sent and got no conclusive network response: an
+    /// open-but-quiet service and a filtering firewall look identical
+    /// over UDP, so the honest verdict is both at once.
     OpenFiltered,
+    /// A LOCAL failure (socket creation, connect, unexpected OS error)
+    /// meant this port was not actually tested. Reporting it as any
+    /// network verdict would mislead the reader.
+    Unprobed,
 }
 
 impl UdpVerdict {
@@ -107,6 +114,7 @@ impl UdpVerdict {
             UdpVerdict::Open(_) => "OPEN",
             UdpVerdict::Closed => "CLOSED",
             UdpVerdict::OpenFiltered => "OPEN|FILTERED",
+            UdpVerdict::Unprobed => "UNPROBED",
         }
     }
 
@@ -115,6 +123,7 @@ impl UdpVerdict {
             UdpVerdict::Open(_) => "open",
             UdpVerdict::Closed => "closed",
             UdpVerdict::OpenFiltered => "open|filtered",
+            UdpVerdict::Unprobed => "unprobed",
         }
     }
 }
@@ -141,15 +150,15 @@ fn udp_probe(
     };
     let Ok(socket) = UdpSocket::bind(bind_addr) else {
         socket_errors.fetch_add(1, Ordering::Relaxed);
-        return UdpVerdict::OpenFiltered;
+        return UdpVerdict::Unprobed;
     };
     if socket.connect(SocketAddr::new(target, port)).is_err() {
         socket_errors.fetch_add(1, Ordering::Relaxed);
-        return UdpVerdict::OpenFiltered;
+        return UdpVerdict::Unprobed;
     }
     if socket.set_read_timeout(Some(timeout)).is_err() {
         socket_errors.fetch_add(1, Ordering::Relaxed);
-        return UdpVerdict::OpenFiltered;
+        return UdpVerdict::Unprobed;
     }
 
     let payload = probe_payload(port);
@@ -161,7 +170,7 @@ fn udp_probe(
                 return UdpVerdict::Closed; // the flush of a pending ICMP error
             }
             socket_errors.fetch_add(1, Ordering::Relaxed);
-            return UdpVerdict::OpenFiltered;
+            return UdpVerdict::Unprobed;
         }
 
         match socket.recv(&mut buf) {
@@ -172,7 +181,7 @@ fn udp_probe(
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {}
                 _ => {
                     socket_errors.fetch_add(1, Ordering::Relaxed);
-                    return UdpVerdict::OpenFiltered;
+                    return UdpVerdict::Unprobed;
                 }
             },
         }
@@ -189,7 +198,7 @@ fn sweep(
     timeout: Duration,
     workers: usize,
     show_progress: bool,
-) -> (Vec<(u16, UdpVerdict)>, usize) {
+) -> (Vec<(u16, UdpVerdict)>, super::SweepStatus, usize) {
     let total = ports.len();
     let worker_count = workers.clamp(1, MAX_WORKERS).min(total.max(1));
 
@@ -243,8 +252,10 @@ fn sweep(
         }));
     }
 
+    let mut failed_joins = 0usize;
     for handle in handles {
         if handle.join().is_err() {
+            failed_joins += 1;
             eprintln!("{}", "Warning: a UDP worker exited unexpectedly".yellow());
         }
     }
@@ -252,12 +263,27 @@ fn sweep(
 
     if let Some(progress) = progress_thread {
         progress.join().ok();
-        println!("\r [ok] {} / {} probes sent", total, total);
+        let dispatched = tried.load(Ordering::Relaxed);
+        if dispatched >= total && failed_joins == 0 {
+            println!("\r [ok] {} / {} probes sent", dispatched, total);
+        } else {
+            println!(
+                "\r [!!] {} / {} probes dispatched — sweep ended early, results may be incomplete",
+                dispatched, total
+            );
+        }
     }
 
     let mut results = results.lock().unwrap_or_else(unlock).clone();
     results.sort_unstable_by_key(|(port, _)| *port);
-    (results, socket_errors.load(Ordering::Relaxed))
+    (
+        results,
+        super::SweepStatus {
+            dispatched: tried.load(Ordering::Relaxed),
+            failed_joins,
+        },
+        socket_errors.load(Ordering::Relaxed),
+    )
 }
 
 // ============================================================
@@ -280,6 +306,10 @@ struct UdpReport {
     timeout_seconds: f64,
     workers: usize,
     duration_seconds: f32,
+    /// False when a worker failed or local errors meant some ports were
+    /// never really probed — the reader should not trust the absence of
+    /// OPEN verdicts in that case.
+    complete: bool,
     results: Vec<UdpFinding>,
 }
 
@@ -327,13 +357,14 @@ pub fn execute(
         );
     }
 
-    let (results, socket_errors) = sweep(
+    let (results, status, socket_errors) = sweep(
         target_ip,
         &ports,
         Duration::from_secs_f64(timeout_secs),
         workers,
         !json,
     );
+    let complete = status.is_complete(ports.len()) && socket_errors == 0;
 
     if socket_errors > 0 {
         eprintln!(
@@ -356,6 +387,7 @@ pub fn execute(
             timeout_seconds: timeout_secs,
             workers,
             duration_seconds: started_at.elapsed().as_secs_f32(),
+            complete,
             results: results
                 .iter()
                 .map(|(port, verdict)| UdpFinding {
@@ -383,22 +415,27 @@ pub fn execute(
     }
 
     println!("{}", "========================================".cyan());
-    let (mut open, mut closed, mut filtered) = (0usize, 0usize, 0usize);
+    let (mut open, mut closed, mut filtered, mut unprobed) = (0usize, 0usize, 0usize, 0usize);
     for (port, verdict) in &results {
         match verdict {
             UdpVerdict::Open(_) => open += 1,
             UdpVerdict::Closed => closed += 1,
             UdpVerdict::OpenFiltered => filtered += 1,
+            UdpVerdict::Unprobed => unprobed += 1,
         }
         let detail = match verdict {
             UdpVerdict::Open(n) => format!("({} bytes received)", n),
             UdpVerdict::Closed => "host says: nothing listens here".to_string(),
             UdpVerdict::OpenFiltered => "(no response — open or firewalled)".to_string(),
+            UdpVerdict::Unprobed => {
+                "(local error — the probe could not be sent, see warnings)".to_string()
+            }
         };
         let colored_label = match verdict {
             UdpVerdict::Open(_) => verdict.label().green().bold(),
             UdpVerdict::Closed => verdict.label().red(),
             UdpVerdict::OpenFiltered => verdict.label().yellow(),
+            UdpVerdict::Unprobed => verdict.label().magenta(),
         };
         println!(
             " Port {:<6} {:<10} {}  {}",
@@ -412,11 +449,12 @@ pub fn execute(
     println!(
         "{}",
         format!(
-            " UDP scan complete in {:.2}s — open: {}, closed: {}, open|filtered: {}.",
+            " UDP scan complete in {:.2}s — open: {}, closed: {}, open|filtered: {}, unprobed: {}.",
             started_at.elapsed().as_secs_f32(),
             open,
             closed,
-            filtered
+            filtered,
+            unprobed
         )
         .cyan()
     );
@@ -464,9 +502,11 @@ mod tests {
         assert_eq!(UdpVerdict::Open(1).label(), "OPEN");
         assert_eq!(UdpVerdict::Closed.label(), "CLOSED");
         assert_eq!(UdpVerdict::OpenFiltered.label(), "OPEN|FILTERED");
+        assert_eq!(UdpVerdict::Unprobed.label(), "UNPROBED");
         assert_eq!(UdpVerdict::Open(1).json_name(), "open");
         assert_eq!(UdpVerdict::Closed.json_name(), "closed");
         assert_eq!(UdpVerdict::OpenFiltered.json_name(), "open|filtered");
+        assert_eq!(UdpVerdict::Unprobed.json_name(), "unprobed");
     }
 
     #[test]
@@ -483,7 +523,7 @@ mod tests {
             }
         });
 
-        let (results, socket_errors) = sweep(
+        let (results, status, socket_errors) = sweep(
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             &[port],
             Duration::from_millis(300),
@@ -491,6 +531,7 @@ mod tests {
             false,
         );
 
+        assert!(status.is_complete(1));
         assert_eq!(socket_errors, 0);
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -508,7 +549,7 @@ mod tests {
         let port = handle.local_addr().unwrap().port();
         drop(handle);
 
-        let (results, socket_errors) = sweep(
+        let (results, status, socket_errors) = sweep(
             IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             &[port],
             Duration::from_millis(300),
@@ -516,6 +557,7 @@ mod tests {
             false,
         );
 
+        assert!(status.is_complete(1));
         assert_eq!(socket_errors, 0);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, UdpVerdict::Closed);
@@ -530,6 +572,7 @@ mod tests {
             timeout_seconds: 1.0,
             workers: 200,
             duration_seconds: 1.5,
+            complete: true,
             results: vec![
                 UdpFinding {
                     port: 53,
@@ -546,6 +589,7 @@ mod tests {
             ],
         };
         let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["complete"], true);
         assert_eq!(value["results"][0]["port"], 53);
         assert_eq!(value["results"][0]["verdict"], "open");
         assert_eq!(value["results"][1]["verdict"], "open|filtered");

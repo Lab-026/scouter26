@@ -89,6 +89,21 @@ pub(crate) fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// What a worker-pool sweep can report about its own completeness: how
+/// many jobs were actually dispatched, and how many workers died before
+/// finishing. A sweep is complete only when every job was dispatched and
+/// no worker failed.
+pub(crate) struct SweepStatus {
+    pub(crate) dispatched: usize,
+    pub(crate) failed_joins: usize,
+}
+
+impl SweepStatus {
+    pub(crate) fn is_complete(&self, total: usize) -> bool {
+        self.failed_joins == 0 && self.dispatched >= total
+    }
+}
+
 /// A finished flag shared with a progress thread, so the line can be
 /// released the moment the workers are done even if a panic left the
 /// counters short of the total.

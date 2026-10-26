@@ -121,6 +121,15 @@ to raw packet surgery — with every phase verified against live networks
 ## [1.4.4] - 2026-10-26
 
 ### Fixed
+- **UDP verdict accuracy**: a probe that could not even be sent (local
+  socket failure) is now reported as `UNPROBED` instead of
+  `OPEN|FILTERED`, in both human and JSON output, and counted separately
+  in the summary — "the port appears filtered" and "I failed to probe the
+  port" are different findings.
+- **Incomplete-sweep reporting**: if a scanner worker dies, the final
+  progress line shows the real dispatched count, the human report carries
+  an "ended early — results may be incomplete" warning, and the JSON
+  reports gain a `complete` field (scan, discover, udp).
 - **Progress lines can no longer hang**: a worker that panicked mid-probe
   could leave the progress counter short of the total forever (scan, udp
   and discover shared the pattern). Work is now counted at dispatch time,

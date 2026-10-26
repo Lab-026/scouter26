@@ -125,11 +125,12 @@ fn run_nonce(pid: u32) -> u16 {
 }
 
 /// A 64-bit per-run token, carried in the probe payload and verified in
-/// every Echo Reply. The base value is drawn from the operating system
-/// (std's RandomState is OS-seeded — the strongest randomness the
-/// standard library offers without adding a dependency), then mixed with
-/// the pid. This makes accidental cross-run token matches astronomically
-/// unlikely; it is still not cryptographic authentication. Time Exceeded
+/// every Echo Reply. The base value comes from std's RandomState — a
+/// hash builder initialised with random keys, not a documented
+/// general-purpose RNG — mixed with the clock and the pid. This makes
+/// accidental cross-run token matches unlikely; it is still not
+/// cryptographic authentication, and an OS RNG crate would be the choice
+/// if stronger guarantees were ever needed. Time Exceeded
 /// messages quote only the original IP header and the first eight ICMP
 /// bytes, so the token cannot travel in them — cross-run protection there
 /// rests on the 16-bit sequence nonce, and the docs say so.
