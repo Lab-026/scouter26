@@ -10,9 +10,14 @@
 //! a proper IP header whose TTL we set per hop through the IP_TTL socket
 //! option (the one thing userspace cannot normally touch, which is why
 //! this command needs root). Replies arrive on a raw ICMP capture socket
-//! with their IP headers intact, and are classified by hand: identifier +
-//! sequence still survive inside Time Exceeded messages even though the
-//! payload does not.
+//! with their IP headers intact, and are classified by hand against the
+//! probe's FULL identity: identifier, sequence, source and destination
+//! addresses, the TTL, and — because Echo Replies carry the payload back
+//! verbatim — the probe's embedded process id. Time Exceeded messages
+//! truncate the payload, but they embed the original IP header, which
+//! still carries our source, destination and TTL, and those are checked
+//! too. Matching less than the full identity would let two concurrent
+//! traces (or a forged packet) impersonate each other.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -40,9 +45,54 @@ fn trace_identity(pid: u32) -> (u16, u16) {
     (0x1964 ^ (pid & 0xFFFF) as u16, 0x5C01 ^ (pid >> 16) as u16)
 }
 
-/// What an incoming ICMP datagram means for our trace. Replies are
-/// matched to our probes by identifier + sequence — the payload does not
-/// survive inside Time Exceeded messages, but those two fields do.
+/// The full identity of one probe in flight. Every field here is checked
+/// against incoming replies — because the transmitted (identifier,
+/// sequence) pair alone can alias across processes and hops.
+pub(crate) struct ProbeIdentity {
+    /// ICMP identifier: the low 16 bits of the process id, fingerprinted.
+    id: u16,
+    /// The full process id — carried in the probe payload and verified in
+    /// Echo Replies, which return the payload verbatim.
+    pid: u32,
+    /// Our address: validated as the embedded source in Time Exceeded.
+    source: Ipv4Addr,
+    /// The traced destination: validated as the source of Echo Replies
+    /// and the embedded destination in Time Exceeded.
+    destination: Ipv4Addr,
+    /// This probe's TTL: validated against the embedded header in Time
+    /// Exceeded and carried in the payload of Echo Replies.
+    ttl: u8,
+    /// The transmitted sequence number: per-process base + TTL.
+    seq: u16,
+}
+
+impl ProbeIdentity {
+    pub(crate) fn new(pid: u32, source: Ipv4Addr, destination: Ipv4Addr, ttl: u8) -> Self {
+        let (id, base) = trace_identity(pid);
+        ProbeIdentity {
+            id,
+            pid,
+            source,
+            destination,
+            ttl,
+            seq: base.wrapping_add(ttl as u16),
+        }
+    }
+}
+
+/// The probe payload: magic + full 32-bit pid + ttl. Echo Replies return
+/// it verbatim, which lets us verify a reply is truly ours even when the
+/// 16-bit identifier and sequence have aliased across processes.
+fn trace_payload(pid: u32, ttl: u8) -> [u8; 16] {
+    let mut payload = [0u8; 16];
+    payload[..8].copy_from_slice(b"SC26TRAC");
+    payload[8..12].copy_from_slice(&pid.to_be_bytes());
+    payload[12..14].copy_from_slice(&(ttl as u16).to_be_bytes());
+    payload
+}
+
+/// What an incoming ICMP datagram means for our trace. Every classification
+/// requires the reply to carry our full identity — see ProbeIdentity.
 #[derive(Debug, PartialEq)]
 pub(crate) enum TraceEvent {
     /// A router at this hop dropped our packet and said so.
@@ -51,12 +101,7 @@ pub(crate) enum TraceEvent {
     Destination(u16),
 }
 
-pub(crate) fn classify_trace_reply(
-    datagram: &[u8],
-    our_id: u16,
-    expected_source: Ipv4Addr,
-    expected_destination: Ipv4Addr,
-) -> Option<TraceEvent> {
+pub(crate) fn classify_trace_reply(datagram: &[u8], probe: &ProbeIdentity) -> Option<TraceEvent> {
     if datagram.len() < 28 {
         return None;
     }
@@ -77,17 +122,26 @@ pub(crate) fn classify_trace_reply(
 
     match icmp[0] {
         ICMP_ECHO_REPLY => {
-            // Echo Reply — but only trust it when it comes from the host
-            // we actually set out to reach. A matching identifier alone is
-            // not proof of identity: any other echo traffic on this
-            // machine (or a spoofed reply) could carry the same numbers.
+            // Echo Reply — trusted only when every identity field agrees:
+            // it must come from the traced destination, carry our
+            // identifier and sequence, and echo back a payload containing
+            // our full pid and this probe's TTL.
+            if icmp.len() < 8 + 16 {
+                return None;
+            }
             let id = u16::from_be_bytes([icmp[4], icmp[5]]);
             let seq = u16::from_be_bytes([icmp[6], icmp[7]]);
-            if id == our_id && source == expected_destination {
-                Some(TraceEvent::Destination(seq))
-            } else {
-                None
+            if id != probe.id || seq != probe.seq || source != probe.destination {
+                return None;
             }
+            let payload = &icmp[8..8 + 16];
+            if &payload[..8] != b"SC26TRAC"
+                || u32::from_be_bytes(payload[8..12].try_into().ok()?) != probe.pid
+                || u16::from_be_bytes(payload[12..14].try_into().ok()?) != probe.ttl as u16
+            {
+                return None;
+            }
+            Some(TraceEvent::Destination(seq))
         }
         11 if icmp[1] == 0 => {
             // Time Exceeded, code 0: TTL exceeded in transit — the
@@ -113,8 +167,10 @@ pub(crate) fn classify_trace_reply(
             }
             let inner_src = Ipv4Addr::new(icmp[8 + 12], icmp[8 + 13], icmp[8 + 14], icmp[8 + 15]);
             let inner_dst = Ipv4Addr::new(icmp[8 + 16], icmp[8 + 17], icmp[8 + 18], icmp[8 + 19]);
-            if inner_src != expected_source || inner_dst != expected_destination {
-                return None;
+            let inner_ttl = icmp[8 + 8];
+            if inner_src != probe.source || inner_dst != probe.destination || inner_ttl != probe.ttl
+            {
+                return None; // the embedded probe was not this hop's probe
             }
             let inner_header_words = (icmp[8] & 0x0F) as usize * 4;
             let inner = icmp.get(8 + inner_header_words..)?;
@@ -123,7 +179,7 @@ pub(crate) fn classify_trace_reply(
             }
             let id = u16::from_be_bytes([inner[4], inner[5]]);
             let seq = u16::from_be_bytes([inner[6], inner[7]]);
-            if id != our_id {
+            if id != probe.id {
                 return None;
             }
             Some(TraceEvent::Router(source, seq))
@@ -205,8 +261,7 @@ pub fn execute(
     // this machine can never share both fields. (The payload does not
     // survive inside Time Exceeded messages, so this pair is our
     // identity on the wire.)
-    let (identifier, seq_base) = trace_identity(std::process::id());
-    let payload = *b"SCOUTER26-TRACE\x00"; // visible in Wireshark, 16 bytes
+    let pid = std::process::id();
 
     if !json {
         println!("{}", "========================================".cyan());
@@ -230,15 +285,15 @@ pub fn execute(
     let mut sent_times: HashMap<u16, Instant> = HashMap::new();
 
     for ttl in 1..=max_hops {
-        let seq = seq_base.wrapping_add(ttl as u16);
-        let echo = build_echo_request(identifier, seq, &payload);
+        let probe = ProbeIdentity::new(pid, src_ip, target_ip, ttl);
+        let echo = build_echo_request(probe.id, probe.seq, &trace_payload(pid, ttl));
         socket
             .set_ttl(ttl)
             .map_err(|error| format!("could not set TTL {}: {}", ttl, error))?;
         socket
             .send(&echo, target_ip)
             .map_err(|error| format!("could not send probe {}/{}: {}", ttl, max_hops, error))?;
-        sent_times.insert(seq, Instant::now());
+        sent_times.insert(probe.seq, Instant::now());
 
         // Wait for THIS probe's answer, ignoring everyone else's traffic.
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
@@ -251,9 +306,9 @@ pub fn execute(
             let Some(n) = socket.recv(&mut buf) else {
                 break; // timeout slice elapsed: no answer for this hop
             };
-            let event = classify_trace_reply(&buf[..n], identifier, src_ip, target_ip);
+            let event = classify_trace_reply(&buf[..n], &probe);
             let ours = event.as_ref().is_some_and(|event| match event {
-                TraceEvent::Router(_, s) | TraceEvent::Destination(s) => *s == seq,
+                TraceEvent::Router(_, s) | TraceEvent::Destination(s) => *s == probe.seq,
             });
             if ours {
                 outcome = event;
@@ -262,7 +317,7 @@ pub fn execute(
         }
 
         let rtt_ms = sent_times
-            .get(&seq)
+            .get(&probe.seq)
             .map(|sent| sent.elapsed().as_secs_f64() * 1000.0);
 
         match outcome {
@@ -373,212 +428,145 @@ pub fn execute(
 mod tests {
     use super::*;
 
-    /// Assemble a full ICMP datagram the way the kernel delivers it to a
-    /// raw socket: IP header first, then the ICMP message.
-    fn datagram(source: [u8; 4], icmp_type: u8, identifier: u16, seq: u16) -> Vec<u8> {
-        let mut datagram = vec![0u8; 20 + 8];
-        datagram[0] = 0x45; // IPv4, no options
-        datagram[9] = 1; // protocol: ICMP
-        datagram[12..16].copy_from_slice(&source);
-        datagram[20] = icmp_type;
-        datagram[24..26].copy_from_slice(&identifier.to_be_bytes());
-        datagram[26..28].copy_from_slice(&seq.to_be_bytes());
+    /// A complete ProbeIdentity for testing, with the aliasing pair from
+    /// the round-7 review: PID 1 at TTL 2 and PID 65537 at TTL 1 transmit
+    /// the same (identifier, sequence) pair.
+    fn probe_a() -> ProbeIdentity {
+        ProbeIdentity {
+            id: 0x1965,
+            pid: 1,
+            source: Ipv4Addr::new(192, 168, 18, 29),
+            destination: Ipv4Addr::new(1, 1, 1, 1),
+            ttl: 2,
+            seq: 0x5C03,
+        }
+    }
+
+    fn probe_b() -> ProbeIdentity {
+        ProbeIdentity {
+            id: 0x1965,
+            pid: 65_537,
+            source: Ipv4Addr::new(192, 168, 18, 29),
+            destination: Ipv4Addr::new(1, 1, 1, 1),
+            ttl: 1,
+            seq: 0x5C03,
+        }
+    }
+
+    /// Assemble an Echo Reply datagram as the destination would send it:
+    /// IP header from the destination, then our echo reply with our full
+    /// payload echoed back.
+    fn echo_reply(from: [u8; 4], probe: &ProbeIdentity) -> Vec<u8> {
+        let payload = trace_payload(probe.pid, probe.ttl);
+        let mut datagram = vec![0u8; 20 + 8 + payload.len()];
+        datagram[0] = 0x45;
+        datagram[9] = 1; // ICMP
+        datagram[12..16].copy_from_slice(&from);
+        datagram[20] = ICMP_ECHO_REPLY;
+        datagram[24..26].copy_from_slice(&probe.id.to_be_bytes());
+        datagram[26..28].copy_from_slice(&probe.seq.to_be_bytes());
+        datagram[28..].copy_from_slice(&payload);
         datagram
     }
 
-    /// Build a synthetic "our probe" as it would appear embedded inside a
-    /// Time Exceeded message: IP header (src to dst, protocol ICMP) plus
-    /// our echo request header.
-    fn build_our_probe(src: Ipv4Addr, dst: Ipv4Addr) -> Vec<u8> {
-        let echo = build_echo_request(0x1964, 3, &[0u8; 16]);
-        let mut packet = vec![0u8; 20 + echo.len()];
-        packet[0] = 0x45;
-        packet[9] = 1; // protocol: ICMP
-        packet[12..16].copy_from_slice(&src.octets());
-        packet[16..20].copy_from_slice(&dst.octets());
-        packet[20..].copy_from_slice(&echo);
-        packet
+    /// Assemble a Time Exceeded datagram as a router would send it: outer
+    /// IP from the router, ICMP type 11 code 0, then the embedded original
+    /// IP header + the first 8 bytes of our original echo request.
+    fn time_exceeded(router: [u8; 4], probe: &ProbeIdentity) -> Vec<u8> {
+        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
+        datagram[0] = 0x45;
+        datagram[9] = 1;
+        datagram[12..16].copy_from_slice(&router);
+        datagram[20] = 11;
+        datagram[21] = 0; // code: TTL exceeded in transit
+        let embedded_ip = &mut datagram[28..48];
+        embedded_ip[0] = 0x45;
+        embedded_ip[8] = probe.ttl; // the TTL that died here
+        embedded_ip[9] = 1;
+        embedded_ip[12..16].copy_from_slice(&probe.source.octets());
+        embedded_ip[16..20].copy_from_slice(&probe.destination.octets());
+        let embedded_icmp = &mut datagram[48..56];
+        embedded_icmp[0] = ICMP_ECHO_REQUEST;
+        embedded_icmp[4..6].copy_from_slice(&probe.id.to_be_bytes());
+        embedded_icmp[6..8].copy_from_slice(&probe.seq.to_be_bytes());
+        datagram
+    }
+
+    #[test]
+    fn probe_payloads_carry_the_full_identity() {
+        let payload = trace_payload(65_537, 3);
+        assert_eq!(&payload[..8], b"SC26TRAC");
+        assert_eq!(
+            u32::from_be_bytes(payload[8..12].try_into().unwrap()),
+            65_537
+        );
+        assert_eq!(u16::from_be_bytes(payload[12..14].try_into().unwrap()), 3);
     }
 
     #[test]
     fn echo_replies_classify_as_the_destination() {
-        let datagram = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
-        match classify_trace_reply(
-            &datagram,
-            0x1964,
-            Ipv4Addr::new(192, 168, 18, 29),
-            Ipv4Addr::new(1, 1, 1, 1),
-        ) {
-            Some(TraceEvent::Destination(5)) => {}
-            other => panic!("expected Destination(5), got {:?}", other),
+        let reply = echo_reply([1, 1, 1, 1], &probe_a());
+        match classify_trace_reply(&reply, &probe_a()) {
+            Some(TraceEvent::Destination(0x5C03)) => {}
+            other => panic!("expected Destination, got {:?}", other),
         }
     }
 
     #[test]
     fn time_exceeded_classifies_as_a_router() {
-        // A Time Exceeded carries: outer IP (from the router) + ICMP type
-        // 11 + the original IP header + the first 8 bytes of our original
-        // ICMP header. Only the identifier and sequence survive the trip —
-        // that is what we match on.
-        let original = build_echo_request(0x1964, 3, &[0u8; 16]);
-        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
-        datagram[0] = 0x45;
-        datagram[9] = 1;
-        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]); // the router
-        datagram[20] = 11; // ICMP: Time Exceeded
-        // Embedded original IP header (20 bytes) + our ICMP header (8)
-        let embedded_ip = &mut datagram[28..48];
-        embedded_ip[0] = 0x45;
-        embedded_ip[9] = 1; // the original packet was ICMP too
-        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]); // our source
-        embedded_ip[16..20].copy_from_slice(&[1, 1, 1, 1]); // our target
-        let embedded_icmp = &mut datagram[48..56];
-        embedded_icmp.copy_from_slice(&original[..8]);
-
-        match classify_trace_reply(
-            &datagram,
-            0x1964,
-            Ipv4Addr::new(192, 168, 18, 29),
-            Ipv4Addr::new(1, 1, 1, 1),
-        ) {
-            Some(TraceEvent::Router(ip, 3)) => {
+        let te = time_exceeded([198, 51, 100, 7], &probe_a());
+        match classify_trace_reply(&te, &probe_a()) {
+            Some(TraceEvent::Router(ip, 0x5C03)) => {
                 assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
             }
-            other => panic!("expected Router(198.51.100.7, 3), got {:?}", other),
+            other => panic!("expected Router, got {:?}", other),
         }
     }
 
     #[test]
-    fn other_peoples_icmp_is_ignored() {
-        let wrong_id = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0xBEEF, 5);
-        assert!(
-            classify_trace_reply(
-                &wrong_id,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1)
-            )
-            .is_none()
-        );
+    fn aliased_probes_from_different_processes_stay_separated() {
+        // The round-7 review scenario: both probes transmit the same
+        // (identifier, sequence) pair. The payload pid + ttl (Echo Reply)
+        // and the embedded TTL (Time Exceeded) are what separate them.
+        let reply_to_a = echo_reply([1, 1, 1, 1], &probe_a());
+        let te_about_a = time_exceeded([198, 51, 100, 7], &probe_a());
 
-        let mut not_icmp = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
-        not_icmp[9] = 6; // protocol: TCP — not our kind of mail
-        assert!(
-            classify_trace_reply(
-                &not_icmp,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1)
-            )
-            .is_none()
-        );
+        // Probe B must not claim either of A's replies...
+        assert!(classify_trace_reply(&reply_to_a, &probe_b()).is_none());
+        assert!(classify_trace_reply(&te_about_a, &probe_b()).is_none());
+
+        // ...and probe A must.
+        assert!(classify_trace_reply(&reply_to_a, &probe_a()).is_some());
+        assert!(classify_trace_reply(&te_about_a, &probe_a()).is_some());
+    }
+
+    #[test]
+    fn other_peoples_icmp_is_ignored() {
+        // Wrong identifier.
+        let mut reply = echo_reply([1, 1, 1, 1], &probe_a());
+        reply[24] ^= 0xFF;
+        assert!(classify_trace_reply(&reply, &probe_a()).is_none());
+
+        // Not ICMP at all.
+        let mut tcpish = echo_reply([1, 1, 1, 1], &probe_a());
+        tcpish[9] = 6;
+        assert!(classify_trace_reply(&tcpish, &probe_a()).is_none());
 
         // A Time Exceeded whose embedded packet is not an echo request.
-        let mut strange = vec![0u8; 20 + 8 + 20 + 8];
-        strange[0] = 0x45;
-        strange[9] = 1;
-        strange[12..16].copy_from_slice(&[198, 51, 100, 7]);
-        strange[20] = 11;
-        strange[48] = 13; // embedded type: not an echo request
-        assert!(
-            classify_trace_reply(
-                &strange,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1)
-            )
-            .is_none()
-        );
-    }
+        let mut strange = time_exceeded([198, 51, 100, 7], &probe_a());
+        strange[48] = 13;
+        assert!(classify_trace_reply(&strange, &probe_a()).is_none());
 
-    #[test]
-    fn an_echo_reply_from_the_wrong_host_is_not_the_destination() {
-        // Regression for the traceroute source-validation gap: a matching
-        // identifier and sequence are not enough — the reply must come
-        // from the host we set out to reach.
-        let impostor = datagram([203, 0, 113, 9], ICMP_ECHO_REPLY, 0x1964, 5);
-        assert!(
-            classify_trace_reply(
-                &impostor,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1)
-            )
-            .is_none()
-        );
+        // A Time Exceeded with code 1: impossible for our DF-marked,
+        // unfragmented probes, so it is never a hop.
+        let mut code1 = time_exceeded([198, 51, 100, 7], &probe_a());
+        code1[21] = 1;
+        assert!(classify_trace_reply(&code1, &probe_a()).is_none());
 
-        let genuine = datagram([1, 1, 1, 1], ICMP_ECHO_REPLY, 0x1964, 5);
-        assert_eq!(
-            classify_trace_reply(
-                &genuine,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1)
-            ),
-            Some(TraceEvent::Destination(5))
-        );
-    }
-
-    #[test]
-    fn a_time_exceeded_about_someone_elses_probe_is_ignored() {
-        // Regression for the Time Exceeded hardening: the embedded probe
-        // must be ours (our source) and aimed at our destination. A
-        // router's error about somebody else's traffic — or a forged one —
-        // embeds a probe that fails this check.
-        let original = build_our_probe(Ipv4Addr::new(192, 168, 18, 29), Ipv4Addr::new(8, 8, 8, 8));
-        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
-        datagram[0] = 0x45;
-        datagram[9] = 1;
-        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]); // the router
-        datagram[20] = 11;
-        let embedded_ip = &mut datagram[28..48];
-        embedded_ip[0] = 0x45;
-        embedded_ip[9] = 1;
-        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]); // our src
-        embedded_ip[16..20].copy_from_slice(&[8, 8, 8, 8]); // NOT our target
-        let embedded_icmp = &mut datagram[48..56];
-        embedded_icmp.copy_from_slice(&original[..8]);
-
-        assert!(
-            classify_trace_reply(
-                &datagram,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn fragment_reassembly_time_exceeded_is_not_a_hop() {
-        // Code 1 cannot be produced by our probes (they are single,
-        // Don't-Fragment fragments), so the classifier must not treat it
-        // as an ordinary router hop.
-        let original = build_our_probe(Ipv4Addr::new(192, 168, 18, 29), Ipv4Addr::new(1, 1, 1, 1));
-        let mut datagram = vec![0u8; 20 + 8 + 20 + 8];
-        datagram[0] = 0x45;
-        datagram[9] = 1;
-        datagram[12..16].copy_from_slice(&[198, 51, 100, 7]);
-        datagram[20] = 11;
-        datagram[21] = 1; // code 1: fragment reassembly time exceeded
-        let embedded_ip = &mut datagram[28..48];
-        embedded_ip[0] = 0x45;
-        embedded_ip[9] = 1;
-        embedded_ip[12..16].copy_from_slice(&[192, 168, 18, 29]);
-        embedded_ip[16..20].copy_from_slice(&[1, 1, 1, 1]);
-        let embedded_icmp = &mut datagram[48..56];
-        embedded_icmp.copy_from_slice(&original[..8]);
-
-        assert!(
-            classify_trace_reply(
-                &datagram,
-                0x1964,
-                Ipv4Addr::new(192, 168, 18, 29),
-                Ipv4Addr::new(1, 1, 1, 1),
-            )
-            .is_none()
-        );
+        // An Echo Reply whose payload names a different process.
+        let mut foreign_payload = echo_reply([1, 1, 1, 1], &probe_a());
+        foreign_payload[32] ^= 0xFF; // corrupt the embedded pid
+        assert!(classify_trace_reply(&foreign_payload, &probe_a()).is_none());
     }
 
     #[test]
@@ -605,8 +593,6 @@ mod tests {
 
     #[test]
     fn sequence_numbers_stay_distinct_across_the_hop_range() {
-        // With a per-run base, every hop in a trace gets its own
-        // sequence number even after wrapping.
         let base = trace_identity(4194).1;
         let seqs: std::collections::HashSet<u16> = (1u8..=30)
             .map(|ttl| base.wrapping_add(ttl as u16))
