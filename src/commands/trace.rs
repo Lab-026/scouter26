@@ -179,8 +179,8 @@ pub(crate) fn classify_trace_reply(datagram: &[u8], probe: &ProbeIdentity) -> Op
             }
             let id = u16::from_be_bytes([inner[4], inner[5]]);
             let seq = u16::from_be_bytes([inner[6], inner[7]]);
-            if id != probe.id {
-                return None;
+            if id != probe.id || seq != probe.seq {
+                return None; // the embedded probe is not this hop's probe
             }
             Some(TraceEvent::Router(source, seq))
         }
@@ -598,6 +598,23 @@ mod tests {
             .map(|ttl| base.wrapping_add(ttl as u16))
             .collect();
         assert_eq!(seqs.len(), 30);
+    }
+
+    #[test]
+    fn a_time_exceeded_with_the_wrong_embedded_sequence_is_rejected() {
+        // Regression: the classifier itself must enforce the full identity,
+        // not rely on the caller to filter sequence mismatches afterward.
+        // Everything matches here except the embedded sequence.
+        let mut wrong_seq = time_exceeded([198, 51, 100, 7], &probe_a());
+        wrong_seq[54] ^= 0xFF; // corrupt the embedded sequence number
+        assert!(classify_trace_reply(&wrong_seq, &probe_a()).is_none());
+
+        // The intact message still passes, proving the corruption is what
+        // made the difference.
+        assert!(
+            classify_trace_reply(&time_exceeded([198, 51, 100, 7], &probe_a()), &probe_a())
+                .is_some()
+        );
     }
 
     #[test]
